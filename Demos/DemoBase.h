@@ -23,6 +23,7 @@ public:
     virtual bool initialize_scene_resources() = 0;
     virtual void cleanup_scene_resources() = 0;
     virtual void render_frame() = 0;
+
     void show_demo_basic_info() {
         if (ImGui::Begin("Basic info: ")) {
             ImGui::Text("current demo: %s", get_type().c_str());
@@ -32,12 +33,21 @@ public:
         ImGui::End();
     }
 
+    virtual void draw_custom_ui() {
+
+    }
+
 
     // Getter
     DemoType get_type() const { return scene_type; }
     DemoCategoryType get_category() const { return scene_category; }
     const std::string& get_description() const { return scene_description; }
     VkCommandBuffer get_command_buffer() const { return command_buffer; }
+
+    bool show_demo_window = true;
+    [[nodiscard]] bool get_show_demo_window() const {
+        return show_demo_window;
+    }
 
     virtual void update(float frame_timer_from_manager){}
 
@@ -89,5 +99,7 @@ protected:
         ImGuiManager::get_singleton().render(command_buffer);
         imgui_render_pass.cmd_end(command_buffer);
     }
+
+
 
 };

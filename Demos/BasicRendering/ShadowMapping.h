@@ -107,7 +107,7 @@ public:
                     .extent = {window_size.width, window_size.height}
                 };
                 vkCmdSetScissor(command_buffer,0,1,&scissor);
-                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow);
+                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,filter_PCF ? pipelines.scene_shadow_PCF : pipelines.scene_shadow);
                 vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.scene.Address(),0, nullptr);
                 draw(demo_scene);
             }
@@ -131,6 +131,8 @@ private:
     glm::vec3 light_pos = glm::vec3();
     float light_fov = 45.f;
     VulkanglTFModel demo_scene;
+
+    bool filter_PCF = true;
 
     struct UniformDataScene {
         glm::mat4 projection;
@@ -449,5 +451,9 @@ private:
         camera.set_perspective(60.0f, (float)window_size.width / (float)window_size.height, 1.f, 256.0f);
         camera.set_rotation({ -25.0f, -390.0f, 0.0f });
         camera.set_position({ 0.0f, 0.0f, -12.5f});
+    }
+
+    void draw_custom_ui() override {
+        ImGui::Checkbox("PCF filtering",&filter_PCF);
     }
 };

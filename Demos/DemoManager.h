@@ -167,10 +167,12 @@ public:
             last_frame_time = current_time;
                 
             // 显示共享UI组件（菜单栏等）
+            show_demo_window = current_demo->get_show_demo_window();
             ImGuiManager::get_singleton().imgui_new_frame(show_demo_window);
             show_shared_ui_components(show_demo_window);
             // 显示当前demo的UI组件
             current_demo->show_demo_basic_info();
+            current_demo->draw_custom_ui();
 
             // 检查是否有demo切换请求
             if (pending_demo_switch) {

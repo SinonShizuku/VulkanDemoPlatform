@@ -7,6 +7,7 @@ public:
     DemoBase3D(DemoType type, DemoCategoryType category,  const std::string& description = "", GLFWwindow *window = nullptr)
         : DemoBase(type, category, description){
         this->window = window;
+        show_demo_window = false;
     }
 
     void handle_mouse_button(int button, int action, int mods) {
@@ -65,6 +66,7 @@ protected:
     Camera camera;
     GLFWmousebuttonfun prev_mouse_button_callback = nullptr;
     GLFWcursorposfun prev_cursor_pos_callback = nullptr;
+    void* prev_window_user_pointer = nullptr;
     struct InputState {
         bool left_mouse_button_down = false;
         glm::vec2 mouse_pos;
@@ -83,6 +85,7 @@ protected:
     } uniform_data;
 
     void register_glfw_callback() {
+        prev_window_user_pointer = glfwGetWindowUserPointer(window);
         glfwSetWindowUserPointer(window, this);
         prev_mouse_button_callback = glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
         prev_cursor_pos_callback = glfwSetCursorPosCallback(window, glfw_mouse_move_callback);
@@ -91,9 +94,6 @@ protected:
     void clean_up_glfw_callback() {
         glfwSetMouseButtonCallback(window, prev_mouse_button_callback);
         glfwSetCursorPosCallback(window, prev_cursor_pos_callback);
-
-        glfwSetWindowUserPointer(window, nullptr);
-        glfwSetMouseButtonCallback(window, nullptr);
-        glfwSetCursorPosCallback(window, nullptr);
+        glfwSetWindowUserPointer(window, prev_window_user_pointer);
     }
 };
