@@ -1,4 +1,3 @@
-// [ 替换你的 scene.vert.shader ]
 #version 450
 #pragma shader_stage(vertex)
 
@@ -14,6 +13,7 @@ layout (binding = 0) uniform UBO
     mat4 model;         // (这个是来自UBO的 mat4(1.0))
     mat4 lightSpace;    // (这个是 light's VP 矩阵)
     vec4 lightPos;
+    float light_size;
     float zNear;
     float zFar;
 } ubo;

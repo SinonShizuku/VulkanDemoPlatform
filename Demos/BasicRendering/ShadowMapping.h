@@ -107,8 +107,18 @@ public:
                     .extent = {window_size.width, window_size.height}
                 };
                 vkCmdSetScissor(command_buffer,0,1,&scissor);
-                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,filter_PCF ? pipelines.scene_shadow_PCF : pipelines.scene_shadow);
-                vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.scene.Address(),0, nullptr);
+                switch (shadow_filter_mode) {
+                    case 0:
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow);
+                        break;
+                    case 1:
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow_PCF);
+                        break;
+                    case 2:
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow_PCSS);
+                        break;
+                }
+                    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.scene.Address(),0, nullptr);
                 draw(demo_scene);
             }
             render_pass.cmd_end(command_buffer);
@@ -129,10 +139,11 @@ private:
     float depth_bias_slope = 1.75f;
 
     glm::vec3 light_pos = glm::vec3();
+    float light_size = 1.5;
     float light_fov = 45.f;
     VulkanglTFModel demo_scene;
 
-    bool filter_PCF = true;
+    int shadow_filter_mode = 0;
 
     struct UniformDataScene {
         glm::mat4 projection;
@@ -140,6 +151,7 @@ private:
         glm::mat4 model;
         glm::mat4 depth_bias_mvp;
         glm::vec4 light_pos;
+        float light_size;
         // Used for depth map visualization
         float z_near;
         float z_far;
@@ -170,10 +182,12 @@ private:
         VulkanPipeline offscreen;
         VulkanPipeline scene_shadow;
         VulkanPipeline scene_shadow_PCF;
+        VulkanPipeline scene_shadow_PCSS;
         ~Pipelines() {
             offscreen.~VulkanPipeline();
             scene_shadow.~VulkanPipeline();
             scene_shadow_PCF.~VulkanPipeline();
+            scene_shadow_PCSS.~VulkanPipeline();
         }
     } pipelines;
 
@@ -192,6 +206,7 @@ private:
         uniform_data_scene.view = camera.matrices.view;
         uniform_data_scene.model = glm::mat4(1.f);
         uniform_data_scene.light_pos = glm::vec4(light_pos, 1.f);
+        uniform_data_scene.light_size = light_size;
         uniform_data_scene.depth_bias_mvp = uniform_data_offscreen.depth_mvp;
         uniform_data_scene.z_near = zNear;
         uniform_data_scene.z_far = zFar;
@@ -222,7 +237,7 @@ private:
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
         };
-        uint32_t enable_PCF = 0;
+        uint32_t filter_type = 0;
         VkSpecializationMapEntry specialization_map_entry = {
             0,
             0,
@@ -232,7 +247,7 @@ private:
             1,
             &specialization_map_entry,
             sizeof(uint32_t),
-            &enable_PCF
+            &filter_type
         };
         auto create = [&] {
             if (current_demo_name != "ShadowMapping") return false;
@@ -271,9 +286,15 @@ private:
             // no filtering
             if (pipelines.scene_shadow.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
+
             // PCF
-            enable_PCF = 1;
+            filter_type = 1;
             if (pipelines.scene_shadow_PCF.create(pipeline_create_info_pack) != VK_SUCCESS)
+                return false;
+
+            // PCSS
+            filter_type = 2;
+            if (pipelines.scene_shadow_PCSS.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
 
             // offscreen pipeline
@@ -298,6 +319,7 @@ private:
             if (current_demo_name != "ShadowMapping") return;
             pipelines.scene_shadow.~VulkanPipeline();
             pipelines.scene_shadow_PCF.~VulkanPipeline();
+            pipelines.scene_shadow_PCSS.~VulkanPipeline();
             pipelines.offscreen.~VulkanPipeline();
         };
         VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(create);
@@ -454,6 +476,7 @@ private:
     }
 
     void draw_custom_ui() override {
-        ImGui::Checkbox("PCF filtering",&filter_PCF);
+        const char* filter_items[] = { "None", "PCF", "PCSS"};
+        ImGui::Combo("Shadow Filter", &shadow_filter_mode, filter_items, IM_ARRAYSIZE(filter_items));
     }
 };
