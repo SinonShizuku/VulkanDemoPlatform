@@ -139,7 +139,7 @@ private:
     float depth_bias_slope = 1.75f;
 
     glm::vec3 light_pos = glm::vec3();
-    float light_size = 1.5;
+    float light_size = 2.5f;
     float light_fov = 45.f;
     VulkanglTFModel demo_scene;
 
@@ -476,7 +476,12 @@ private:
     }
 
     void draw_custom_ui() override {
+        ImGui::Begin("Shadow filter Debug");
         const char* filter_items[] = { "None", "PCF", "PCSS"};
-        ImGui::Combo("Shadow Filter", &shadow_filter_mode, filter_items, IM_ARRAYSIZE(filter_items));
+        ImGui::Combo("Filter Type", &shadow_filter_mode, filter_items, IM_ARRAYSIZE(filter_items));
+        if (shadow_filter_mode == 2) {
+            ImGui::SliderFloat("Light Size", &light_size, 0.1f, 5.0f, "%.2f");
+        }
+        ImGui::End();
     }
 };

@@ -170,7 +170,7 @@ void main()
     if (sc.z > -1.0 && sc.z < 1.0)
     {
         if(filter_type == 0) shadow = textureProj(sc, vec2(0.0));
-        else if(filter_type == 1) shadow = filterPoisson(sc, 2.0); // 固定半径 PCF
+        else if(filter_type == 1) shadow = filterPoisson(sc, 2.0 / float(textureSize(shadowMap, 0)).x); // 固定半径 PCF
         else if(filter_type == 2) shadow = PCSS(sc); // 完整 PCSS
     }
 
