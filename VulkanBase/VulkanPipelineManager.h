@@ -35,6 +35,10 @@ public:
         return ca_canvas;
     }
 
+    const auto& get_ca_offscreen_vsm() {
+        return ca_offscreen_vsm;
+    }
+
     const auto& get_rpwf_ds() {
         return rpwf_ds;
     }
@@ -316,21 +320,21 @@ public:
 
         VkSubpassDependency subpass_dependencies[2] = {
             {
-                .srcSubpass = VK_SUBPASS_EXTERNAL,
-                .dstSubpass = 0,
-                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = 0,
-                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-            },
-            {
                 .srcSubpass = 0,
                 .dstSubpass = VK_SUBPASS_EXTERNAL,
                 .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+            },
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
             }
         };
@@ -367,59 +371,6 @@ public:
     }
 
     const auto& create_rpwf_offscreen_ds() {
-        VkAttachmentDescription attachment_description = {
-            .format = VK_FORMAT_D16_UNORM,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-        };
-
-        VkAttachmentReference attachment_reference = {
-            .attachment = 0,
-            .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        };
-
-        VkSubpassDescription subpass_description = {
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .colorAttachmentCount = 0,
-            .pDepthStencilAttachment = &attachment_reference
-        };
-
-        VkSubpassDependency subpass_dependencies[2] = {
-            {
-                .srcSubpass = VK_SUBPASS_EXTERNAL,
-                .dstSubpass = 0,
-                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-            },
-            {
-                .srcSubpass = 0,
-                .dstSubpass = VK_SUBPASS_EXTERNAL,
-                .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-            }
-        };
-
-        VkRenderPassCreateInfo render_pass_create_info = {
-            .attachmentCount = 1,
-            .pAttachments = &attachment_description,
-            .subpassCount = 1,
-            .pSubpasses = &subpass_description,
-            .dependencyCount = 2,
-            .pDependencies = subpass_dependencies
-        };
-        rpwf_offscreen_ds.render_pass.create(render_pass_create_info);
-
         dsa_offscreen.create(
             VK_FORMAT_D16_UNORM,
             shadow_map_size,
@@ -428,10 +379,97 @@ public:
             VK_IMAGE_USAGE_SAMPLED_BIT
         );
 
+        ca_offscreen_vsm.create(
+            VK_FORMAT_R32G32_SFLOAT,
+            shadow_map_size,
+            1,
+            VK_SAMPLE_COUNT_1_BIT,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT
+        );
+
+        VkAttachmentDescription attachment_description[2] = {
+            {
+                .format = VK_FORMAT_R32G32_SFLOAT,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_GENERAL
+            },
+            {
+                .format = VK_FORMAT_D16_UNORM,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            }
+        };
+
+        VkAttachmentReference attachment_reference[2] = {
+            {
+                    .attachment = 0,
+                    .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                },
+            {
+                    .attachment = 1,
+                    .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            }
+
+        };
+
+        VkSubpassDescription subpass_description = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachment_reference[0],
+            .pDepthStencilAttachment = &attachment_reference[1]
+
+        };
+
+        VkSubpassDependency subpass_dependencies[2] = {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+            },
+            {
+                .srcSubpass = 0,
+                .dstSubpass = VK_SUBPASS_EXTERNAL,
+                .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+            }
+        };
+
+        VkRenderPassCreateInfo render_pass_create_info = {
+            .attachmentCount = 2,
+            .pAttachments = attachment_description,
+            .subpassCount = 1,
+            .pSubpasses = &subpass_description,
+            .dependencyCount = 2,
+            .pDependencies = subpass_dependencies
+        };
+        rpwf_offscreen_ds.render_pass.create(render_pass_create_info);
+
+        VkImageView attachments[2] = {
+              ca_offscreen_vsm.get_image_view(),   // color (RG32F)
+              dsa_offscreen.get_image_view()       // depth
+          };
+
         VkFramebufferCreateInfo framebuffer_create_info = {
             .renderPass = rpwf_offscreen_ds.render_pass,
-            .attachmentCount = 1,
-            .pAttachments = dsa_offscreen.get_address_of_image_view(),
+            .attachmentCount = 2,
+            .pAttachments = attachments,
             .width = shadow_map_size.width,
             .height = shadow_map_size.height,
             .layers = 1
@@ -440,6 +478,7 @@ public:
         return rpwf_offscreen_ds;
 
     }
+
 
     void clear_rpwf_offcreen_ds() {
         rpwf_offscreen_ds.render_pass.clear();
@@ -724,6 +763,7 @@ private:
     inline static RenderPassWithFramebuffer rpwf_imageless;
     inline static RenderPassWithFramebuffer rpwf_offscreen;
     inline static RenderPassWithFramebuffer rpwf_offscreen_ds;
+    inline static RenderPassWithFramebuffer rpwf_offscreen_ds_vssm;
     inline static RenderPassWithFramebuffers rpwf_deferred_to_screen;
     inline static VulkanColorAttachment ca_canvas;
 
@@ -733,12 +773,11 @@ private:
 
     const VkExtent2D shadow_map_size = { 2048, 2048 };
 
-
-private:
     VulkanDepthStencilAttachment dsa_deferred_to_screen;
     VulkanColorAttachment ca_deferred_to_screen_normalZ;
     VulkanColorAttachment ca_deferred_to_screen_albedo_specular;
-    VulkanDepthStencilAttachment dsa_offscreen;
 
+    VulkanColorAttachment ca_offscreen_vsm;
+    VulkanDepthStencilAttachment dsa_offscreen;
 
 };

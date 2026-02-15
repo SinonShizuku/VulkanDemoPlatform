@@ -136,6 +136,21 @@ private:
     }
 };
 
+struct ComputePipelineCreateInfoPack {
+    VkComputePipelineCreateInfo create_info =
+    { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    VkPipelineShaderStageCreateInfo compute_stage_create_info =
+    { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+    ComputePipelineCreateInfoPack() = default;
+    ComputePipelineCreateInfoPack(const ComputePipelineCreateInfoPack& other) noexcept {
+        create_info = other.create_info;
+    }
+    operator VkComputePipelineCreateInfo& () { return create_info; }
+    void update_all() {
+        create_info.stage = compute_stage_create_info;
+    }
+};
+
 class VulkanPipeline {
     VkPipeline handle = VK_NULL_HANDLE;
 public:

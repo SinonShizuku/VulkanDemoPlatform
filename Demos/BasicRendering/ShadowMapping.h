@@ -28,7 +28,8 @@ public:
         timer_speed *= 0.5f;
         register_glfw_callback();
 
-        if (!create_descriptor_resources() ||
+        if (!create_compute_descriptor_resources() ||
+            !create_descriptor_resources() ||
             !create_pipeline_layout() ||
             !create_pipeline()) {
             return false;
@@ -42,13 +43,20 @@ public:
         // 清理资源
         descriptor_sets.~VulkanDescriptorSets();
         descriptor_pool.reset();
+        compute_descriptor_sets.~SatComputeDescriptorSets();
+        compute_descriptor_pool.reset();
         sampler.reset();
         offscreen_depth_sampler.reset();
 
         // 清理管线
-        pipelines.~Pipelines();
+        graphic_pipelines.~GraphicPipelines();
+        compute_pipelines.~ComputePipelines();
         pipeline_layout.~VulkanPipelineLayout();
+        pipeline_layout_offscreen.~VulkanPipelineLayout();
+        compute_pipeline_layout.~VulkanPipelineLayout();
         descriptor_set_layout.~VulkanDescriptorSetLayout();
+        descriptor_set_layout_offscreen.~VulkanDescriptorSetLayout();
+        descriptor_set_layout_compute.~VulkanDescriptorSetLayout();
 
         // 清理回调
         clean_up_glfw_callback();
@@ -67,7 +75,8 @@ public:
         {
             // 离屏rpwf
             auto shadow_map_size = VulkanPipelineManager::get_singleton().get_shadow_map_size();
-            clear_values[0].depthStencil = {1.f, 0};
+            clear_values[0].color = {{ 1.0f, 1.0f, 0.0f, 0.0f }};
+            clear_values[1].depthStencil = {1.f, 0};
             render_pass_offscreen.cmd_begin(command_buffer, framebuffers_offscreen, {{}, shadow_map_size}, clear_values);
             {
                 VkViewport viewport = {
@@ -83,11 +92,152 @@ public:
                 };
                 vkCmdSetScissor(command_buffer,0,1,&scissor);
                 vkCmdSetDepthBias(command_buffer,depth_bias_constant,0.f,depth_bias_slope);
-                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.offscreen);
-                vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.offscreen.Address(),0, nullptr);
-                draw(demo_scene);
+                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.offscreen);
+                vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_offscreen,0,1,descriptor_sets.offscreen.Address(),0, nullptr);
+                draw(demo_scene, pipeline_layout_offscreen);
             }
             render_pass_offscreen.cmd_end(command_buffer);
+
+            // SAT compute passes (row block -> row scan -> row add -> col block -> col scan -> col add)
+            const uint32_t W = shadow_map_size.width;
+            const uint32_t H = shadow_map_size.height;
+            const uint32_t blocksX = (W + sat_block_size - 1) / sat_block_size;
+            const uint32_t blocksY = (H + sat_block_size - 1) / sat_block_size;
+
+            VkImageSubresourceRange color_range = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            };
+
+            auto cmd_barrier_image = [&](VkImage image,
+                                         VkAccessFlags src_access,
+                                         VkAccessFlags dst_access,
+                                         VkImageLayout old_layout,
+                                         VkImageLayout new_layout,
+                                         VkPipelineStageFlags src_stage,
+                                         VkPipelineStageFlags dst_stage) {
+                VkImageMemoryBarrier barrier = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = src_access,
+                    .dstAccessMask = dst_access,
+                    .oldLayout = old_layout,
+                    .newLayout = new_layout,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = image,
+                    .subresourceRange = color_range
+                };
+                vkCmdPipelineBarrier(
+                    command_buffer,
+                    src_stage,
+                    dst_stage,
+                    0,
+                    0, nullptr,
+                    0, nullptr,
+                    1, &barrier
+                );
+            };
+
+            auto cmd_barrier_color_to_compute = [&] {
+                cmd_barrier_image(
+                    VulkanPipelineManager::get_singleton().get_ca_offscreen_vsm().get_image(),
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                );
+            };
+
+            auto cmd_transition_undefined_to_general = [&](VkImage image) {
+                cmd_barrier_image(
+                    image,
+                    0,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                );
+            };
+
+            auto cmd_barrier_compute_to_compute = [&](VkImage image) {
+                cmd_barrier_image(
+                    image,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                );
+            };
+
+            auto cmd_barrier_compute_to_fragment = [&](VkImage image) {
+                cmd_barrier_image(
+                    image,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                );
+            };
+
+            cmd_transition_undefined_to_general(sat_images.row_partial.get_image());
+            cmd_transition_undefined_to_general(sat_images.sat_row.get_image());
+            cmd_transition_undefined_to_general(sat_images.col_partial.get_image());
+            cmd_transition_undefined_to_general(sat_images.sat_final.get_image());
+            cmd_transition_undefined_to_general(sat_images.row_block_sums.get_image());
+            cmd_transition_undefined_to_general(sat_images.row_block_prefix.get_image());
+            cmd_transition_undefined_to_general(sat_images.col_block_sums.get_image());
+            cmd_transition_undefined_to_general(sat_images.col_block_prefix.get_image());
+
+            cmd_barrier_color_to_compute();
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.row_block.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, blocksX, H, 1);
+            cmd_barrier_compute_to_compute(sat_images.row_partial.get_image());
+            cmd_barrier_compute_to_compute(sat_images.row_block_sums.get_image());
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block_scan);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.row_block_scan.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, 1, H, 1);
+            cmd_barrier_compute_to_compute(sat_images.row_block_prefix.get_image());
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block_add);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.row_block_add.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, blocksX, H, 1);
+            cmd_barrier_compute_to_compute(sat_images.sat_row.get_image());
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.col_block.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, W, blocksY, 1);
+            cmd_barrier_compute_to_compute(sat_images.col_partial.get_image());
+            cmd_barrier_compute_to_compute(sat_images.col_block_sums.get_image());
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block_scan);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.col_block_scan.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, W, 1, 1);
+            cmd_barrier_compute_to_compute(sat_images.col_block_prefix.get_image());
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block_add);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
+                0, 1, compute_descriptor_sets.col_block_add.Address(), 0, nullptr);
+            vkCmdDispatch(command_buffer, W, blocksY, 1);
+
+            cmd_barrier_compute_to_fragment(sat_images.sat_final.get_image());
 
             // 屏幕部分rpwf
             clear_values[0].color = {{0.f,0.f,0.f,1.f}};
@@ -109,17 +259,20 @@ public:
                 vkCmdSetScissor(command_buffer,0,1,&scissor);
                 switch (shadow_filter_mode) {
                     case 0:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow);
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow);
                         break;
                     case 1:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow_PCF);
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_PCF);
                         break;
                     case 2:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelines.scene_shadow_PCSS);
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_PCSS);
+                        break;
+                    case 3:
+                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_VSSM);
                         break;
                 }
                     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.scene.Address(),0, nullptr);
-                draw(demo_scene);
+                draw(demo_scene, pipeline_layout);
             }
             render_pass.cmd_end(command_buffer);
 
@@ -159,11 +312,14 @@ private:
 
     struct UniformDataOffscreen {
         glm::mat4 depth_mvp;
+        float z_near;
+        float z_far;
     } uniform_data_offscreen;
 
     std::unique_ptr<VulkanSampler> sampler;
     std::unique_ptr<VulkanDepthSampler> offscreen_depth_sampler;
     std::unique_ptr<VulkanDescriptorPool> descriptor_pool;
+    std::unique_ptr<VulkanDescriptorPool> compute_descriptor_pool;
     struct VulkanDescriptorSets{
         VulkanDescriptorSet offscreen;
         VulkanDescriptorSet scene;
@@ -172,24 +328,83 @@ private:
             scene.~VulkanDescriptorSet();
         }
     } descriptor_sets;
+    struct SatComputeDescriptorSets {
+        VulkanDescriptorSet row_block;
+        VulkanDescriptorSet row_block_scan;
+        VulkanDescriptorSet row_block_add;
+        VulkanDescriptorSet col_block;
+        VulkanDescriptorSet col_block_scan;
+        VulkanDescriptorSet col_block_add;
+        ~SatComputeDescriptorSets() {
+            row_block.~VulkanDescriptorSet();
+            row_block_scan.~VulkanDescriptorSet();
+            row_block_add.~VulkanDescriptorSet();
+            col_block.~VulkanDescriptorSet();
+            col_block_scan.~VulkanDescriptorSet();
+            col_block_add.~VulkanDescriptorSet();
+        }
+    } compute_descriptor_sets;
 
     struct UniformBuffers {
         std::unique_ptr<VulkanUniformBuffer> uniform_buffer_screen;
         std::unique_ptr<VulkanUniformBuffer> uniform_buffer_offscreen;
      } uniform_buffers;
 
-    struct Pipelines {
+    struct GraphicPipelines {
         VulkanPipeline offscreen;
         VulkanPipeline scene_shadow;
         VulkanPipeline scene_shadow_PCF;
         VulkanPipeline scene_shadow_PCSS;
-        ~Pipelines() {
+        VulkanPipeline scene_shadow_VSSM;
+        ~GraphicPipelines() {
             offscreen.~VulkanPipeline();
             scene_shadow.~VulkanPipeline();
             scene_shadow_PCF.~VulkanPipeline();
             scene_shadow_PCSS.~VulkanPipeline();
+            scene_shadow_VSSM.~VulkanPipeline();
         }
-    } pipelines;
+    } graphic_pipelines;
+
+    struct ComputePipelines {
+        VulkanPipeline sat_row_block;
+        VulkanPipeline sat_row_block_add;
+        VulkanPipeline sat_row_block_scan;
+        VulkanPipeline sat_col_block;
+        VulkanPipeline sat_col_block_add;
+        VulkanPipeline sat_col_block_scan;
+        ~ComputePipelines() {
+            sat_row_block.~VulkanPipeline();
+            sat_row_block_scan.~VulkanPipeline();
+            sat_row_block_add.~VulkanPipeline();
+            sat_col_block.~VulkanPipeline();
+            sat_col_block_scan.~VulkanPipeline();
+            sat_col_block_add.~VulkanPipeline();
+        }
+    } compute_pipelines;
+
+    // compute pipelines
+    VulkanPipelineLayout compute_pipeline_layout;
+    VulkanPipelineLayout pipeline_layout_offscreen;
+
+    // SAT resources
+    static constexpr uint32_t sat_block_size = 256;
+    struct SatImages {
+        // Full-resolution intermediate/final SAT images (W x H, RG32F)
+        VulkanColorAttachment row_partial;
+        VulkanColorAttachment sat_row;
+        VulkanColorAttachment col_partial;
+        VulkanColorAttachment sat_final;
+
+        // Row block images (blocksX x H, RG32F)
+        VulkanColorAttachment row_block_sums;
+        VulkanColorAttachment row_block_prefix;
+
+        // Column block images (W x blocksY, RG32F)
+        VulkanColorAttachment col_block_sums;
+        VulkanColorAttachment col_block_prefix;
+    } sat_images;
+    VulkanDescriptorSetLayout descriptor_set_layout_compute;
+    VulkanDescriptorSetLayout descriptor_set_layout_offscreen;
 
     void update_uniform_data() {
         update_light();
@@ -199,6 +414,8 @@ private:
         glm::mat4 depth_view = glm::lookAt(light_pos, glm::vec3(0.f), glm::vec3(0.f, 1.f, 0.f));
         glm::mat4 depth_model = glm::mat4(1.f);
         uniform_data_offscreen.depth_mvp = depth_proj * depth_view * depth_model;
+        uniform_data_offscreen.z_near = zNear;
+        uniform_data_offscreen.z_far = zFar;
         uniform_buffers.uniform_buffer_offscreen->transfer_data(uniform_data_offscreen);
 
         // screen
@@ -226,13 +443,32 @@ private:
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &push_constant_range
         };
-        return pipeline_layout.create(pipeline_layout_create_info) == VK_SUCCESS;
+
+        VkPipelineLayoutCreateInfo compute_pipeline_layout_create_info = {
+            .setLayoutCount = 1,
+            .pSetLayouts = descriptor_set_layout_compute.Address(),
+            .pushConstantRangeCount = 0,
+            .pPushConstantRanges = nullptr
+        };
+
+        VkPipelineLayoutCreateInfo pipeline_layout_offscreen_create_info = {
+            .setLayoutCount = 1,
+            .pSetLayouts = descriptor_set_layout_offscreen.Address(),
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_constant_range
+        };
+
+        return pipeline_layout.create(pipeline_layout_create_info) == VK_SUCCESS
+            && pipeline_layout_offscreen.create(pipeline_layout_offscreen_create_info) == VK_SUCCESS
+            && compute_pipeline_layout.create(compute_pipeline_layout_create_info) == VK_SUCCESS;
+
     }
 
     bool create_pipeline() {
         static VulkanShaderModule vert(get_shader_path("BasicRendering/ShadowMapping/scene.vert.spv").string().c_str());
         static VulkanShaderModule frag(get_shader_path("BasicRendering/ShadowMapping/scene.frag.spv").string().c_str());
         static VulkanShaderModule vert_offscreen(get_shader_path("BasicRendering/ShadowMapping/offscreen.vert.spv").string().c_str());
+        static VulkanShaderModule frag_offscreen(get_shader_path("BasicRendering/ShadowMapping/offscreen.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -284,17 +520,22 @@ private:
             pipeline_create_info_pack.create_info.pStages = shader_stage_create_infos;
 
             // no filtering
-            if (pipelines.scene_shadow.create(pipeline_create_info_pack) != VK_SUCCESS)
+            if (graphic_pipelines.scene_shadow.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
 
             // PCF
             filter_type = 1;
-            if (pipelines.scene_shadow_PCF.create(pipeline_create_info_pack) != VK_SUCCESS)
+            if (graphic_pipelines.scene_shadow_PCF.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
 
             // PCSS
             filter_type = 2;
-            if (pipelines.scene_shadow_PCSS.create(pipeline_create_info_pack) != VK_SUCCESS)
+            if (graphic_pipelines.scene_shadow_PCSS.create(pipeline_create_info_pack) != VK_SUCCESS)
+                return false;
+
+            // VSSM
+            filter_type = 3;
+            if (graphic_pipelines.scene_shadow_VSSM.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
 
             // offscreen pipeline
@@ -302,33 +543,70 @@ private:
             pipeline_create_info_pack.shader_stages.push_back(
                 vert_offscreen.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT)
             );
+            pipeline_create_info_pack.shader_stages.push_back(
+                frag_offscreen.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
+            );
+            pipeline_create_info_pack.create_info.layout = pipeline_layout_offscreen;
             pipeline_create_info_pack.create_info.renderPass = VulkanPipelineManager::get_singleton().get_rpwf_offscreen_ds().render_pass;
-            pipeline_create_info_pack.color_blend_state_create_info.attachmentCount = 0;
+            pipeline_create_info_pack.color_blend_state_create_info.attachmentCount = 1;
             pipeline_create_info_pack.rasterization_state_create_info.cullMode = VK_CULL_MODE_NONE;
             pipeline_create_info_pack.rasterization_state_create_info.depthBiasEnable = VK_TRUE;
             pipeline_create_info_pack.dynamic_states.push_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
             pipeline_create_info_pack.update_all_arrays();
-            pipeline_create_info_pack.create_info.stageCount = 1;
+            pipeline_create_info_pack.create_info.stageCount = 2;
 
-            if (pipelines.offscreen.create(pipeline_create_info_pack) != VK_SUCCESS)
+            if (graphic_pipelines.offscreen.create(pipeline_create_info_pack) != VK_SUCCESS)
                 return false;
 
             return true;
         };
         auto destroy = [this] {
             if (current_demo_name != "ShadowMapping") return;
-            pipelines.scene_shadow.~VulkanPipeline();
-            pipelines.scene_shadow_PCF.~VulkanPipeline();
-            pipelines.scene_shadow_PCSS.~VulkanPipeline();
-            pipelines.offscreen.~VulkanPipeline();
+            graphic_pipelines.scene_shadow.~VulkanPipeline();
+            graphic_pipelines.scene_shadow_PCF.~VulkanPipeline();
+            graphic_pipelines.scene_shadow_PCSS.~VulkanPipeline();
+            graphic_pipelines.scene_shadow_VSSM.~VulkanPipeline();
+            graphic_pipelines.offscreen.~VulkanPipeline();
         };
         VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(create);
         VulkanSwapchainManager::get_singleton().add_callback_destroy_swapchain(destroy);
-        return create();
+
+        if (create() ==  false) return false;
+
+        // create compute pipeline
+        ComputePipelineCreateInfoPack compute_pipeline_create_info_pack;
+
+        struct ComputeTask {
+              const char* spv_path;
+              VulkanPipeline ComputePipelines::* pipeline_member;
+          };
+
+        static constexpr ComputeTask kTasks[] = {
+          {"BasicRendering/ShadowMapping/sat_row_block.comp.spv",      &ComputePipelines::sat_row_block},
+          {"BasicRendering/ShadowMapping/sat_row_block_scan.comp.spv", &ComputePipelines::sat_row_block_scan},
+          {"BasicRendering/ShadowMapping/sat_row_block_add.comp.spv",  &ComputePipelines::sat_row_block_add},
+          {"BasicRendering/ShadowMapping/sat_col_block.comp.spv",      &ComputePipelines::sat_col_block},
+          {"BasicRendering/ShadowMapping/sat_col_block_scan.comp.spv", &ComputePipelines::sat_col_block_scan},
+          {"BasicRendering/ShadowMapping/sat_col_block_add.comp.spv",  &ComputePipelines::sat_col_block_add},
+        };
+
+        compute_pipeline_create_info_pack.create_info.layout = compute_pipeline_layout;
+        compute_pipeline_create_info_pack.create_info.basePipelineHandle = VK_NULL_HANDLE;
+        compute_pipeline_create_info_pack.create_info.basePipelineIndex = -1;
+
+        for (const auto& t : kTasks) {
+          VulkanShaderModule shader(get_shader_path(t.spv_path).string().c_str());
+          compute_pipeline_create_info_pack.compute_stage_create_info = shader.stage_create_info(VK_SHADER_STAGE_COMPUTE_BIT);
+          compute_pipeline_create_info_pack.update_all();
+
+          if ((compute_pipelines.*(t.pipeline_member)).create(compute_pipeline_create_info_pack) != VK_SUCCESS)
+              return false;
+        }
+        return true;
     }
 
     bool create_descriptor_resources() {
-        VkDescriptorSetLayoutBinding descriptor_set_layout_bindings[2] = {
+        VkDescriptorSetLayoutBinding descriptor_set_layout_bindings_scene[3] = {
             {
                 .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -340,14 +618,35 @@ private:
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+            },
+            {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
             }
         };
 
-        VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {
-            .bindingCount = 2,
-            .pBindings = descriptor_set_layout_bindings
+        VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info_scene = {
+            .bindingCount = 3,
+            .pBindings = descriptor_set_layout_bindings_scene
         };
-        descriptor_set_layout.create(descriptor_set_layout_create_info);
+        descriptor_set_layout.create(descriptor_set_layout_create_info_scene);
+
+        VkDescriptorSetLayoutBinding descriptor_set_layout_bindings_offscreen[1] = {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+            }
+        };
+
+        VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info_offscreen = {
+            .bindingCount = 1,
+            .pBindings = descriptor_set_layout_bindings_offscreen
+        };
+        descriptor_set_layout_offscreen.create(descriptor_set_layout_create_info_offscreen);
 
         // 初始化uniform buffers
         uniform_buffers.uniform_buffer_screen = std::make_unique<VulkanUniformBuffer>(sizeof(uniform_data_scene));
@@ -370,17 +669,121 @@ private:
             { *uniform_buffers.uniform_buffer_offscreen, 0, VK_WHOLE_SIZE}
         };
         // 描述符
-        descriptor_pool->allocate_sets(descriptor_sets.offscreen, descriptor_set_layout);
+        descriptor_pool->allocate_sets(descriptor_sets.offscreen, descriptor_set_layout_offscreen);
         descriptor_sets.offscreen.write(buffer_infos[1],VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 0);
 
         descriptor_pool->allocate_sets(descriptor_sets.scene, descriptor_set_layout);
         descriptor_sets.scene.write(buffer_infos[0],VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 0);
         descriptor_sets.scene.write(shadow_map_descriptor,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, 0);
 
+        VkDescriptorImageInfo sat_scene_descriptor = {
+            *sampler, // 或独立 sat_sampler
+            sat_images.sat_final.get_image_view(),
+            VK_IMAGE_LAYOUT_GENERAL
+        };
+        descriptor_sets.scene.write(sat_scene_descriptor,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, 0);
         return true;
     }
 
-    void draw_node(VulkanglTFModel &model, VulkanglTFModel::Node* node) {
+    bool create_compute_descriptor_resources() {
+        const auto shadow_map_size = VulkanPipelineManager::get_singleton().get_shadow_map_size();
+        const uint32_t blocks_x = (shadow_map_size.width + sat_block_size - 1) / sat_block_size;
+        const uint32_t blocks_y = (shadow_map_size.height + sat_block_size - 1) / sat_block_size;
+
+        constexpr VkImageUsageFlags sat_usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        sat_images.row_partial.create(VK_FORMAT_R32G32_SFLOAT, shadow_map_size, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.sat_row.create(VK_FORMAT_R32G32_SFLOAT, shadow_map_size, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.col_partial.create(VK_FORMAT_R32G32_SFLOAT, shadow_map_size, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.sat_final.create(VK_FORMAT_R32G32_SFLOAT, shadow_map_size, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+
+        sat_images.row_block_sums.create(VK_FORMAT_R32G32_SFLOAT, {blocks_x, shadow_map_size.height}, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.row_block_prefix.create(VK_FORMAT_R32G32_SFLOAT, {blocks_x, shadow_map_size.height}, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.col_block_sums.create(VK_FORMAT_R32G32_SFLOAT, {shadow_map_size.width, blocks_y}, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+        sat_images.col_block_prefix.create(VK_FORMAT_R32G32_SFLOAT, {shadow_map_size.width, blocks_y}, 1, VK_SAMPLE_COUNT_1_BIT, sat_usage);
+
+        VkDescriptorSetLayoutBinding compute_bindings[3] = {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
+            },
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
+            },
+            {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
+            }
+        };
+        VkDescriptorSetLayoutCreateInfo compute_layout_create_info = {
+            .bindingCount = 3,
+            .pBindings = compute_bindings
+        };
+        if (descriptor_set_layout_compute.create(compute_layout_create_info) != VK_SUCCESS)
+            return false;
+
+        VkDescriptorPoolSize compute_pool_sizes[] = {
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 18 }
+        };
+        compute_descriptor_pool = std::make_unique<VulkanDescriptorPool>(6, compute_pool_sizes);
+
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.row_block, descriptor_set_layout_compute);
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.row_block_scan, descriptor_set_layout_compute);
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.row_block_add, descriptor_set_layout_compute);
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.col_block, descriptor_set_layout_compute);
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.col_block_scan, descriptor_set_layout_compute);
+        compute_descriptor_pool->allocate_sets(compute_descriptor_sets.col_block_add, descriptor_set_layout_compute);
+
+        auto storage_image_info = [](VkImageView image_view) {
+            return VkDescriptorImageInfo{
+                .sampler = VK_NULL_HANDLE,
+                .imageView = image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+            };
+        };
+
+        const auto moments_raw = storage_image_info(VulkanPipelineManager::get_singleton().get_ca_offscreen_vsm().get_image_view());
+        const auto row_partial = storage_image_info(sat_images.row_partial.get_image_view());
+        const auto sat_row = storage_image_info(sat_images.sat_row.get_image_view());
+        const auto col_partial = storage_image_info(sat_images.col_partial.get_image_view());
+        const auto sat_final = storage_image_info(sat_images.sat_final.get_image_view());
+        const auto row_block_sums = storage_image_info(sat_images.row_block_sums.get_image_view());
+        const auto row_block_prefix = storage_image_info(sat_images.row_block_prefix.get_image_view());
+        const auto col_block_sums = storage_image_info(sat_images.col_block_sums.get_image_view());
+        const auto col_block_prefix = storage_image_info(sat_images.col_block_prefix.get_image_view());
+
+        compute_descriptor_sets.row_block.write(moments_raw, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.row_block.write(row_partial, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+        compute_descriptor_sets.row_block.write(row_block_sums, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2, 0);
+
+        compute_descriptor_sets.row_block_scan.write(row_block_sums, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.row_block_scan.write(row_block_prefix, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+
+        compute_descriptor_sets.row_block_add.write(row_partial, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.row_block_add.write(row_block_prefix, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+        compute_descriptor_sets.row_block_add.write(sat_row, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2, 0);
+
+        compute_descriptor_sets.col_block.write(sat_row, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.col_block.write(col_partial, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+        compute_descriptor_sets.col_block.write(col_block_sums, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2, 0);
+
+        compute_descriptor_sets.col_block_scan.write(col_block_sums, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.col_block_scan.write(col_block_prefix, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+
+        compute_descriptor_sets.col_block_add.write(col_partial, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, 0);
+        compute_descriptor_sets.col_block_add.write(col_block_prefix, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, 0);
+        compute_descriptor_sets.col_block_add.write(sat_final, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2, 0);
+
+        return true;
+    }
+
+    void draw_node(VulkanglTFModel &model, VulkanglTFModel::Node* node, VkPipelineLayout active_pipeline_layout) {
         if (!node->mesh.primitives.empty()) {
             glm::mat4 node_matrix = node->matrix;
             VulkanglTFModel::Node* current_parent = node->parent;
@@ -392,7 +795,7 @@ private:
             flip_matrix[1][1] = -1.0f;
             glm::mat4 final_matrix = flip_matrix * node_matrix;
 
-            vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &final_matrix);
+            vkCmdPushConstants(command_buffer, active_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &final_matrix);
             for (VulkanglTFModel::Primitive& primitive : node->mesh.primitives) {
                 if (primitive.index_count > 0) {
                     vkCmdDrawIndexed(command_buffer, primitive.index_count, 1, primitive.first_index, 0, 0);
@@ -400,16 +803,16 @@ private:
             }
         }   
         for (auto& child : node->children) {
-            draw_node(model, child);
+            draw_node(model, child, active_pipeline_layout);
         }
     }
 
-    void draw(VulkanglTFModel &model) {
+    void draw(VulkanglTFModel &model, VkPipelineLayout active_pipeline_layout) {
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, model.vertices.Address(), &offset);
         vkCmdBindIndexBuffer(command_buffer, model.indices.index_buffer, 0, VK_INDEX_TYPE_UINT32);
         for (auto& node : model.nodes) {
-            draw_node(model, node);
+            draw_node(model, node, active_pipeline_layout);
         }
     }
 
@@ -434,11 +837,6 @@ private:
             outstream << std::format("[ Model ] Could not open the glTF file.\nMake sure the assets submodule has been checked out and is up-to-date.\n");
             return;
         }
-
-        // for (auto& vertex : vertex_buffer) {
-        //     vertex.pos.y *= -1.0f;
-        //     vertex.normal.y *= -1.0f;
-        // }
 
         size_t vertex_buffer_size = vertex_buffer.size() * sizeof(VulkanglTFModel::Vertex);
         size_t index_buffer_size = index_buffer.size() * sizeof(uint32_t);
@@ -477,9 +875,9 @@ private:
 
     void draw_custom_ui() override {
         ImGui::Begin("Shadow filter Debug");
-        const char* filter_items[] = { "None", "PCF", "PCSS"};
+        const char* filter_items[] = { "None", "PCF", "PCSS", "VSSM"};
         ImGui::Combo("Filter Type", &shadow_filter_mode, filter_items, IM_ARRAYSIZE(filter_items));
-        if (shadow_filter_mode == 2) {
+        if (shadow_filter_mode == 2 || shadow_filter_mode == 3) {
             ImGui::SliderFloat("Light Size", &light_size, 0.1f, 5.0f, "%.2f");
         }
         ImGui::End();

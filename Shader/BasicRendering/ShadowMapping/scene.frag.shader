@@ -13,6 +13,7 @@ layout (binding = 0) uniform UBO
     float zFar;
 } ubo;
 layout (binding = 1) uniform sampler2D shadowMap;
+layout (binding = 2) uniform sampler2D shadowMomentsSAT;
 
 layout (location = 0) in vec3 inNormal;
 layout (location = 1) in vec3 inColor;
@@ -20,7 +21,7 @@ layout (location = 2) in vec3 inViewVec;
 layout (location = 3) in vec3 inLightVec;
 layout (location = 4) in vec4 inShadowCoord;
 
-// 0: Hard Shadow, 1: Poisson PCF, 2: PCSS
+// 0: Hard Shadow, 1: Poisson PCF, 2: PCSS, 3: VSSM
 layout (constant_id = 0) const int filter_type = 0;
 
 layout (location = 0) out vec4 outFragColor;
@@ -141,25 +142,79 @@ float filterPoisson(vec4 sc, float radiusUV) // 改为 radiusUV
     return shadowFactor / float(POISSON_SAMPLES);
 }
 
-float PCSS(vec4 sc) {
-    vec2 uv = sc.xy;
-    float zReceiverProjected = sc.z;
-    float zReceiverLinear = linearizeDepth(zReceiverProjected);
+float computePenumbraRadiusUV(vec4 sc)
+{
+    float zReceiverLinear = linearizeDepth(sc.z);
+    float avgBlockerDepthLinear = findBlocker(sc.xy, sc.z);
+    if (avgBlockerDepthLinear < 0.0) {
+        return 0.0;
+    }
 
-    // 1. 寻找平均遮挡深度 (返回的是线性深度)
-    float avgBlockerDepthLinear = findBlocker(uv, zReceiverProjected);
-
-    if(avgBlockerDepthLinear == -1.0) return 1.0;
-
-    // 2. 半影估算 (全部使用线性深度)
     // w_penumbra = (d_receiver - d_blocker) * w_light / d_blocker
     float penumbraWorld = (zReceiverLinear - avgBlockerDepthLinear) * ubo.lightSize / avgBlockerDepthLinear;
+    // Map world-space penumbra size to UV radius.
+    float penumbraRadiusUV = penumbraWorld / (zReceiverLinear * 0.5);
+    return max(penumbraRadiusUV, 0.0);
+}
 
-    // 3. 将世界空间的半影宽度转为 UV 空间半径
-    // 这里除以 zReceiverLinear 是为了补偿透视投影带来的“近大远小”
-    float penumbraRadiusUV = penumbraWorld / (zReceiverLinear * 0.5); // 0.5 是简化系数
+float PCSS(vec4 sc) {
+    float penumbraRadiusUV = computePenumbraRadiusUV(sc);
+    if (penumbraRadiusUV <= 0.0) return 1.0;
+    return filterPoisson(sc, penumbraRadiusUV);
+}
 
-    return filterPoisson(sc, penumbraRadiusUV); // 50.0 用于放大效果
+vec2 sat_fetch(ivec2 p, ivec2 dim)
+{
+    if (p.x < 0 || p.y < 0) return vec2(0.0);
+    p = min(p, dim - 1);
+    return texelFetch(shadowMomentsSAT, p, 0).rg;
+}
+
+vec2 sat_box_moments(vec2 uv, int radius)
+{
+    ivec2 dim = textureSize(shadowMomentsSAT, 0);
+    ivec2 center = ivec2(uv * vec2(dim));
+    center = clamp(center, ivec2(0), dim - 1);
+
+    ivec2 pmin = max(center - ivec2(radius), ivec2(0));
+    ivec2 pmax = min(center + ivec2(radius), dim - 1);
+
+    vec2 A = sat_fetch(ivec2(pmin.x - 1, pmin.y - 1), dim);
+    vec2 B = sat_fetch(ivec2(pmax.x, pmin.y - 1), dim);
+    vec2 C = sat_fetch(ivec2(pmin.x - 1, pmax.y), dim);
+    vec2 D = sat_fetch(ivec2(pmax.x, pmax.y), dim);
+
+    vec2 sum = D - B - C + A;
+    float area = float((pmax.x - pmin.x + 1) * (pmax.y - pmin.y + 1));
+    return sum / max(area, 1.0);
+}
+
+float reduce_light_bleeding(float pmax, float amount)
+{
+    return clamp((pmax - amount) / (1.0 - amount), 0.0, 1.0);
+}
+
+float VSSM(vec4 sc)
+{
+    const float minVariance = 1e-5;
+    const float bleedingReduction = 0.1;
+
+    float radiusUV = computePenumbraRadiusUV(sc);
+    if (radiusUV <= 0.0) return 1.0;
+
+    ivec2 dim = textureSize(shadowMomentsSAT, 0);
+    int radiusPx = int(ceil(radiusUV * float(min(dim.x, dim.y))));
+    int kernelRadius = clamp(radiusPx, 1, 64);
+
+    float zReceiverLinear = linearizeDepth(sc.z);
+    vec2 moments = sat_box_moments(sc.xy, kernelRadius);
+    float mean = moments.x;
+    float variance = max(moments.y - mean * mean, minVariance);
+    float d = zReceiverLinear - mean;
+
+    float p = variance / (variance + d * d);
+    float visibility = (zReceiverLinear <= mean) ? 1.0 : p;
+    return reduce_light_bleeding(visibility, bleedingReduction);
 }
 
 void main()
@@ -172,6 +227,7 @@ void main()
         if(filter_type == 0) shadow = textureProj(sc, vec2(0.0));
         else if(filter_type == 1) shadow = filterPoisson(sc, 2.0 / float(textureSize(shadowMap, 0)).x); // 固定半径 PCF
         else if(filter_type == 2) shadow = PCSS(sc); // 完整 PCSS
+        else if(filter_type == 3) shadow = VSSM(sc);
     }
 
     vec3 N = normalize(inNormal);
