@@ -63,7 +63,8 @@ else()
     add_library(glfw::glfw ALIAS glfw)
 endif()
 
-find_package(Vulkan 1.3 REQUIRED)
+# glslc 用于在构建时把 Shader/**/*.shader 编译成运行期加载的 SPIR-V。
+find_package(Vulkan 1.3 REQUIRED COMPONENTS glslc)
 
 # ShaderLoader.h selects the debug or release shaderc library with a pragma.
 # Keep the matching SDK lib directory on the linker search path instead of
@@ -169,6 +170,51 @@ target_link_libraries(VulkanRenderer
         Vulkan::Vulkan
         ktx
 )
+
+# 着色器以 GLSL 源码（*.shader）入库，运行期按 PROJECT_ROOT_PATH/Shader/**.spv
+# 加载 SPIR-V，因此这里把编译产物生成到源码树中与源码同名的位置。
+file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Shader/*.shader")
+
+set(_glslc_extra_flags)
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    set(_glslc_extra_flags -O)
+endif()
+
+set(_shader_binaries)
+foreach(_shader_source IN LISTS _shader_sources)
+    string(REGEX REPLACE "\\.shader$" ".spv" _shader_binary "${_shader_source}")
+    add_custom_command(
+        OUTPUT "${_shader_binary}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" ${_glslc_extra_flags} "${_shader_source}" -o "${_shader_binary}"
+        DEPENDS "${_shader_source}"
+        COMMENT "Compiling shader ${_shader_source}"
+        VERBATIM)
+    list(APPEND _shader_binaries "${_shader_binary}")
+endforeach()
+
+add_custom_target(VulkanRendererShaders ALL DEPENDS ${_shader_binaries})
+add_dependencies(VulkanRenderer VulkanRendererShaders)
+
+# Debug 链接的是 shaderc_sharedd.lib，运行时需要同名 DLL。把它部署到可执行文件
+# 旁边，这样直接双击/调试运行都无需把 Vulkan SDK 的 Bin 目录加进 PATH。
+# Release 链接静态的 shaderc_combined.lib，没有额外的运行时依赖。
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    get_filename_component(_vulkan_bin_dir "${Vulkan_GLSLC_EXECUTABLE}" DIRECTORY)
+    set(_shaderc_runtime_dll "${_vulkan_bin_dir}/shaderc_sharedd.dll")
+    if(EXISTS "${_shaderc_runtime_dll}")
+        add_custom_command(TARGET VulkanRenderer POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${_shaderc_runtime_dll}"
+                "$<TARGET_FILE_DIR:VulkanRenderer>"
+            COMMENT "Deploying shaderc_sharedd.dll"
+            VERBATIM)
+    else()
+        message(WARNING
+            "shaderc_sharedd.dll was not found next to glslc; add <VulkanSDK>/Bin "
+            "to PATH before running the Debug build.")
+    endif()
+endif()
 
 if(MSVC)
     set_target_properties(VulkanRenderer PROPERTIES
