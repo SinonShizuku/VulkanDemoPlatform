@@ -120,7 +120,7 @@ public:
                 command_pool_graphics.allocate_buffers(command_buffer_transfer);
             }
             if (VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_compute() != VK_QUEUE_FAMILY_IGNORED) {
-                command_pool_graphics.create(VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_compute(),VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+                command_pool_compute.create(VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_compute(),VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
             }
             if (VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_presentation() != VK_QUEUE_FAMILY_IGNORED &&
                 VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_presentation() != VulkanCore::get_singleton().get_vulkan_device().get_queue_family_index_graphics() &&

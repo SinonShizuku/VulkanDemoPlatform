@@ -108,6 +108,22 @@ public:
         return physical_device_features_vulkan13;
     }
 
+    VkPhysicalDeviceFeatures2& get_physical_device_features() {
+        return physical_device_features;
+    }
+
+    VkPhysicalDeviceVulkan11Features& get_physical_device_vulkan11_features() {
+        return physical_device_features_vulkan11;
+    }
+
+    VkPhysicalDeviceVulkan12Features& get_physical_device_vulkan12_features() {
+        return physical_device_features_vulkan12;
+    }
+
+    VkPhysicalDeviceVulkan13Features& get_physical_device_vulkan13_features() {
+        return physical_device_features_vulkan13;
+    }
+
     [[nodiscard]] constexpr const VkPhysicalDeviceProperties & get_physical_device_properties() const {
         return physical_device_properties.properties;
     }
@@ -122,6 +138,12 @@ public:
 
     [[nodiscard]] constexpr const VkPhysicalDeviceVulkan13Properties & get_physical_device_properties_vulkan13() const {
         return physical_device_properties_vulkan13;
+    }
+
+    [[nodiscard]] uint32_t get_physical_device_api_version() const {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physical_device, &properties);
+        return properties.apiVersion;
     }
 
     [[nodiscard]] constexpr const VkPhysicalDeviceMemoryProperties & get_physical_device_memory_properties() const {
@@ -232,8 +254,32 @@ public:
             && queue_family_index_compute != queue_family_index_presentation)
             queue_create_info[queue_create_info_count++].queueFamilyIndex = queue_family_index_compute;
         get_physical_device_features(api_version);
-        // VkPhysicalDeviceFeatures physical_device_features;
-        // vkGetPhysicalDeviceFeatures(physical_device, &physical_device_features);
+
+        // Query fills the structures with every supported feature. Preserve the
+        // pNext chain but clear the values so only explicit requirements are enabled.
+        void* features_pnext = physical_device_features.pNext;
+        physical_device_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        physical_device_features.pNext = features_pnext;
+
+        if (api_version >= VK_API_VERSION_1_1) {
+            void* features_11_pnext = physical_device_features_vulkan11.pNext;
+            physical_device_features_vulkan11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+            physical_device_features_vulkan11.pNext = features_11_pnext;
+        }
+        if (api_version >= VK_API_VERSION_1_2) {
+            void* features_12_pnext = physical_device_features_vulkan12.pNext;
+            physical_device_features_vulkan12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+            physical_device_features_vulkan12.pNext = features_12_pnext;
+        }
+        if (api_version >= VK_API_VERSION_1_3) {
+            void* features_13_pnext = physical_device_features_vulkan13.pNext;
+            physical_device_features_vulkan13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+            physical_device_features_vulkan13.pNext = features_13_pnext;
+        }
+
+        for (auto& callback : callbacks_configure_device)
+            callback();
+
         VkDeviceCreateInfo device_create_info = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             .flags = flags,
@@ -252,9 +298,11 @@ public:
         if (ppnext)
             *ppnext = nullptr;
         if (result_t result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);result!=VK_SUCCESS) {
+            callbacks_configure_device.clear();
             outstream << std::format("[ VulkanDevice ] ERROR\nFailed to create a vulkan logical device!\nError code: {}\n", int32_t(result));
             return result;
         }
+        callbacks_configure_device.clear();
         if (queue_family_index_graphics!=VK_QUEUE_FAMILY_IGNORED)
             vkGetDeviceQueue(device,queue_family_index_graphics,0,&queue_graphics);
         if (queue_family_index_presentation!=VK_QUEUE_FAMILY_IGNORED)
@@ -273,6 +321,18 @@ public:
     }
 
     //以下函数用于创建逻辑设备失败后
+    void query_physical_device_features(uint32_t api_version) {
+        get_physical_device_features(api_version);
+    }
+
+    [[nodiscard]] bool has_device_extension(const char* extension_name) const {
+        std::vector<const char*> extensions{extension_name};
+        if (check_device_extensions(extensions) != VK_SUCCESS) {
+            return false;
+        }
+        return extensions.front() != nullptr;
+    }
+
     result_t check_device_extensions(std::span<const char*> extensions_to_check, const char* layer_name = nullptr) const {
         uint32_t extension_count;
         std::vector<VkExtensionProperties> available_extensions;
@@ -304,6 +364,10 @@ public:
             for (auto& i : extensions_to_check)
                 i = nullptr;
         return VK_SUCCESS;
+    }
+
+    void add_callback_configure_device(std::function<void()> function) {
+        callbacks_configure_device.push_back(function);
     }
 
     void add_callback_create_device(std::function<void()> function) {
@@ -346,6 +410,7 @@ private:
     VkDevice device;
     std::vector<const char*> device_extensions;
 
+    std::vector<std::function<void()>> callbacks_configure_device;
     std::vector<std::function<void()>> callbacks_create_device;
     std::vector<std::function<void()>> callbacks_destroy_device;
 

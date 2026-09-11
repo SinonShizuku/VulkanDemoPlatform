@@ -142,7 +142,7 @@ public:
             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
             .mipLodBias = 0.f,
-            .anisotropyEnable = VK_TRUE,
+            .anisotropyEnable = VulkanCore::get_singleton().get_vulkan_device().get_physical_device_features().features.samplerAnisotropy,
             .maxAnisotropy = VulkanCore::get_singleton().get_vulkan_device().get_physical_device_properties().limits.maxSamplerAnisotropy,
             .compareEnable = VK_FALSE,
             .compareOp = VK_COMPARE_OP_ALWAYS,

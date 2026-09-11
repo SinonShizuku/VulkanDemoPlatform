@@ -51,58 +51,110 @@ bool VulkanAppLauncher::init_vulkan() {
     VulkanCore::get_singleton().get_vulkan_device().add_device_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
     // 获取Vulkan版本
-    VulkanCore::get_singleton().get_vulkan_instance().use_latest_api_version();
+    auto& instance = VulkanCore::get_singleton().get_vulkan_instance();
+    if (instance.use_latest_api_version()) {
+        outstream << std::format("[ VulkanAppLauncher ] ERROR\nFailed to query the Vulkan loader version!\n");
+        return false;
+    }
 
     // 创建Vulkan实例
-    auto api_version = VulkanCore::get_singleton().get_vulkan_instance().get_api_version();
-    if (VulkanCore::get_singleton().get_vulkan_instance().create_instance())
+    if (instance.create_instance())
         return false;
 
     // 配置surface
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
-    if (result_t result = glfwCreateWindowSurface(VulkanCore::get_singleton().get_vulkan_instance().get_instance(),window,nullptr,&surface)) {
+    if (result_t result = glfwCreateWindowSurface(instance.get_instance(),window,nullptr,&surface)) {
         outstream << std::format("[ InitializeWindow ] ERROR\nFailed to create a window surface!\nError code: {}\n", int32_t(result));
         glfwTerminate();
         return false;
     }
-    VulkanCore::get_singleton().get_vulkan_instance().set_surface(surface);
+    instance.set_surface(surface);
 
-    // 配置Vulkan设备
+    // 选择物理设备。扩展和 feature 必须在 vkCreateDevice 之前启用。
+    auto& device = VulkanCore::get_singleton().get_vulkan_device();
     if (VulkanCore::get_singleton().acquire_physical_devices() ||
-        VulkanCore::get_singleton().determine_physical_device(0,true,false) ||
-        VulkanCore::get_singleton().get_vulkan_device().create_device(api_version))
+        VulkanCore::get_singleton().determine_physical_device(0,true,true))
         return false;
 
-    // 检查版本开启无图像帧缓冲功能
-    if (VulkanCore::get_singleton().get_vulkan_instance().get_api_version() < VK_API_VERSION_1_1) {
-        outstream << std::format("[ VulkanAppLauncher ] ERROR\nVulkan is not supported on this machine!\n");
+    const uint32_t device_api_version = std::min(instance.get_api_version(), device.get_physical_device_api_version());
+    if (device_api_version < VK_API_VERSION_1_1) {
+        outstream << std::format("[ VulkanAppLauncher ] ERROR\nA Vulkan 1.1 or newer device is required!\n");
         return false;
     }
-    if (VulkanCore::get_singleton().get_vulkan_instance().get_api_version() < VK_API_VERSION_1_2) {
-        VulkanCore::get_singleton().get_vulkan_device().add_device_extension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
-        VulkanCore::get_singleton().get_vulkan_device().add_device_extension(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME);
-        VkPhysicalDeviceImagelessFramebufferFeatures physical_device_imageless_framebuffer_features = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES,
-        };
-        VulkanCore::get_singleton().get_vulkan_device().add_next_structure_physical_device_features(physical_device_imageless_framebuffer_features);
-        if (!physical_device_imageless_framebuffer_features.imagelessFramebuffer)
-            return -1;
-    }
-    if (VulkanCore::get_singleton().get_vulkan_instance().get_api_version() < VK_API_VERSION_1_3) {
-        VulkanCore::get_singleton().get_vulkan_device().add_device_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-        VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
-        };
-        VulkanCore::get_singleton().get_vulkan_device().add_next_structure_physical_device_features(dynamic_rendering_features);
-        if (!dynamic_rendering_features.dynamicRendering)
-            return -1;
-    }
-    else {
-        if (!VulkanCore::get_singleton().get_vulkan_device().get_physical_device_vulkan12_features().imagelessFramebuffer)
-            return -1;
 
+    VkPhysicalDeviceImagelessFramebufferFeatures imageless_framebuffer_features = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES,
+    };
+    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+    };
+
+    if (device_api_version < VK_API_VERSION_1_2) {
+        if (!device.has_device_extension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME) ||
+            !device.has_device_extension(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME)) {
+            outstream << std::format("[ VulkanAppLauncher ] ERROR\nImageless framebuffer extensions are unavailable!\n");
+            return false;
+        }
+        device.add_device_extension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+        device.add_device_extension(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME);
+        device.add_next_structure_physical_device_features(imageless_framebuffer_features);
     }
+
+    if (device_api_version < VK_API_VERSION_1_3) {
+        if (!device.has_device_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) {
+            outstream << std::format("[ VulkanAppLauncher ] ERROR\nVK_KHR_dynamic_rendering is unavailable!\n");
+            return false;
+        }
+        device.add_device_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        device.add_next_structure_physical_device_features(dynamic_rendering_features);
+    }
+
+    device.query_physical_device_features(device_api_version);
+
+    const bool has_imageless_framebuffer = device_api_version >= VK_API_VERSION_1_2
+        ? device.get_physical_device_vulkan12_features().imagelessFramebuffer
+        : imageless_framebuffer_features.imagelessFramebuffer;
+    const bool has_dynamic_rendering = device_api_version >= VK_API_VERSION_1_3
+        ? device.get_physical_device_vulkan13_features().dynamicRendering
+        : dynamic_rendering_features.dynamicRendering;
+
+    if (!has_imageless_framebuffer || !has_dynamic_rendering) {
+        outstream << std::format(
+            "[ VulkanAppLauncher ] ERROR\nRequired device features are unavailable!\n"
+            "imagelessFramebuffer={}, dynamicRendering={}\n",
+            has_imageless_framebuffer,
+            has_dynamic_rendering);
+        return false;
+    }
+
+    const bool has_sampler_anisotropy = device.get_physical_device_features().features.samplerAnisotropy;
+    device.add_callback_configure_device([&device, device_api_version, has_sampler_anisotropy, &imageless_framebuffer_features, &dynamic_rendering_features] {
+        device.get_physical_device_features().features.samplerAnisotropy = has_sampler_anisotropy;
+
+        if (device_api_version >= VK_API_VERSION_1_2)
+            device.get_physical_device_vulkan12_features().imagelessFramebuffer = VK_TRUE;
+        else
+            imageless_framebuffer_features.imagelessFramebuffer = VK_TRUE;
+
+        if (device_api_version >= VK_API_VERSION_1_3)
+            device.get_physical_device_vulkan13_features().dynamicRendering = VK_TRUE;
+        else
+            dynamic_rendering_features.dynamicRendering = VK_TRUE;
+    });
+
+    outstream << std::format(
+        "Device API Version: {}.{}.{}\n"
+        "Device features: samplerAnisotropy={}, imagelessFramebuffer={}, dynamicRendering={}\n",
+        VK_VERSION_MAJOR(device_api_version),
+        VK_VERSION_MINOR(device_api_version),
+        VK_VERSION_PATCH(device_api_version),
+        has_sampler_anisotropy,
+        has_imageless_framebuffer,
+        has_dynamic_rendering);
+
+    if (device.create_device(device_api_version))
+        return false;
 
     // 创建交换链
     if (VulkanSwapchainManager::get_singleton().create_swapchain())
