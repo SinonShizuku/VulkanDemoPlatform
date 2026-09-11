@@ -4,6 +4,7 @@
 #include "../VulkanCore.h"
 #include "../VulkanSwapchainManager.h"
 #include "../components/VulkanMemory.h"
+#include "../components/VulkanRenderPassWithFramebuffers.h"
 
 #include <algorithm>
 #include <format>
@@ -94,8 +95,17 @@ struct FrameGraphExecutor::Impl {
         bool used = true;
     };
 
+    struct RenderTargetEntry {
+        std::string key;
+        VulkanRenderPass render_pass;
+        VulkanFramebuffer framebuffer;
+        RenderTarget info;
+        bool used = true;
+    };
+
     std::vector<std::unique_ptr<TextureEntry>> textures;
     std::vector<std::unique_ptr<BufferEntry>> buffers;
+    std::vector<std::unique_ptr<RenderTargetEntry>> render_targets;
 
     // 本帧 handle -> 设备资源
     std::vector<TextureEntry*> active_textures;
@@ -305,7 +315,131 @@ bool FrameGraphExecutor::prepare(const FrameGraph& graph) {
         it = impl_->buffers.erase(it);
     }
 
+    for (auto it = impl_->render_targets.begin(); it != impl_->render_targets.end();) {
+        if ((*it)->used) {
+            (*it)->used = false;
+            ++it;
+            continue;
+        }
+        ++impl_->stats.destroyed_resources;
+        it = impl_->render_targets.erase(it);
+    }
+
     return true;
+}
+
+// ------------------------------------------------------------- render target
+
+const RenderTarget* FrameGraphExecutor::acquire_render_target(const FrameGraph& graph,
+                                                               std::span<const RenderTargetAttachment> attachments) {
+    std::vector<VkImageView> views;
+    VkExtent2D extent{};
+    int32_t depth_index = -1;
+    for (uint32_t index = 0; index < attachments.size(); ++index) {
+        const RenderTargetAttachment& attachment = attachments[index];
+        const VkImageView view = image_view(attachment.resource);
+        if (view == VK_NULL_HANDLE) {
+            impl_->error = std::format("render target 附件 {} 没有可用的 VkImageView", index);
+            return nullptr;
+        }
+        views.push_back(view);
+        if (attachment.depth_stencil) {
+            depth_index = static_cast<int32_t>(index);
+        }
+
+        const auto& resources = graph.get_resources();
+        if (attachment.resource.index < resources.size()) {
+            const TextureDesc& desc = resources[attachment.resource.index].texture;
+            extent = VkExtent2D{ desc.extent.width, desc.extent.height };
+        }
+    }
+
+    // key 里带上视图句柄与附件参数：换 swapchain image / resize / 改 load-op 都会自然生成新条目，
+    // 旧条目在下一次 prepare() 里被回收。
+    std::string key;
+    for (uint32_t index = 0; index < attachments.size(); ++index) {
+        key += std::format("{}|{}|{}|{}|{}|{};",
+                           reinterpret_cast<uint64_t>(views[index]),
+                           static_cast<int>(attachments[index].layout),
+                           static_cast<int>(attachments[index].load_op),
+                           static_cast<int>(attachments[index].store_op),
+                           attachments[index].depth_stencil ? 1 : 0,
+                           index);
+    }
+    key += std::format("{}x{}", extent.width, extent.height);
+
+    const auto found = std::find_if(impl_->render_targets.begin(), impl_->render_targets.end(),
+        [&key](const std::unique_ptr<Impl::RenderTargetEntry>& entry) { return entry->key == key; });
+    if (found != impl_->render_targets.end()) {
+        (*found)->used = true;
+        return &(*found)->info;
+    }
+
+    auto entry = std::make_unique<Impl::RenderTargetEntry>();
+    entry->key = key;
+
+    std::vector<VkAttachmentDescription> descriptions;
+    std::vector<VkAttachmentReference> references;
+    VkAttachmentReference depth_reference{};
+    descriptions.reserve(attachments.size());
+    references.reserve(attachments.size());
+    for (uint32_t index = 0; index < attachments.size(); ++index) {
+        const auto& resource = graph.get_resources()[attachments[index].resource.index];
+        VkAttachmentDescription description{};
+        description.format = attachments[index].depth_stencil ? resource.texture.format : resource.texture.format;
+        description.samples = resource.texture.samples;
+        description.loadOp = attachments[index].load_op;
+        description.storeOp = attachments[index].store_op;
+        description.stencilLoadOp = attachments[index].stencil_load_op;
+        description.stencilStoreOp = attachments[index].stencil_store_op;
+        // 固定 layout：pass 内部不做转换，转换由图负责
+        description.initialLayout = attachments[index].layout;
+        description.finalLayout = attachments[index].layout;
+        descriptions.push_back(description);
+
+        if (attachments[index].depth_stencil) {
+            depth_reference = VkAttachmentReference{ index, attachments[index].layout };
+        } else {
+            references.push_back(VkAttachmentReference{ index, attachments[index].layout });
+        }
+    }
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = static_cast<uint32_t>(references.size());
+    subpass.pColorAttachments = references.empty() ? nullptr : references.data();
+    subpass.pDepthStencilAttachment = depth_index >= 0 ? &depth_reference : nullptr;
+
+    VkRenderPassCreateInfo render_pass_info{};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.attachmentCount = static_cast<uint32_t>(descriptions.size());
+    render_pass_info.pAttachments = descriptions.data();
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+    if (entry->render_pass.create(render_pass_info) != VK_SUCCESS) {
+        impl_->error = std::format("创建 render target 的 render pass 失败（附件数 {}）", descriptions.size());
+        return nullptr;
+    }
+
+    VkFramebufferCreateInfo framebuffer_info{};
+    framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_info.renderPass = entry->render_pass;
+    framebuffer_info.attachmentCount = static_cast<uint32_t>(views.size());
+    framebuffer_info.pAttachments = views.data();
+    framebuffer_info.width = extent.width;
+    framebuffer_info.height = extent.height;
+    framebuffer_info.layers = 1;
+    if (entry->framebuffer.create(framebuffer_info) != VK_SUCCESS) {
+        impl_->error = "创建 render target 的 framebuffer 失败";
+        return nullptr;
+    }
+
+    entry->info.render_pass = entry->render_pass;
+    entry->info.framebuffer = entry->framebuffer;
+    entry->info.extent = extent;
+    const RenderTarget* result = &entry->info;
+    impl_->render_targets.push_back(std::move(entry));
+    return result;
 }
 
 // ------------------------------------------------------------- 资源访问器

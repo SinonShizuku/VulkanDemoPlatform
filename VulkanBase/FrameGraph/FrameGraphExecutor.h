@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 
 #include <memory>
+#include <span>
 #include <string>
 
 namespace framegraph {
@@ -27,6 +28,26 @@ struct FrameGraphExecution {
     [[nodiscard]] VkImage image(ResourceHandle handle) const noexcept;
     [[nodiscard]] VkImageView image_view(ResourceHandle handle) const noexcept;
     [[nodiscard]] VkBuffer buffer(ResourceHandle handle) const noexcept;
+};
+
+// 一个"用图资源拼出来的" render target 附件描述：layout 必须是图规划给该资源的 layout
+// （COLOR_ATTACHMENT_OPTIMAL / DEPTH_STENCIL_ATTACHMENT_OPTIMAL / SHADER_READ_ONLY_OPTIMAL ...），
+// 这样 render pass 内部不会再发生隐式 layout 转换，转换全部来自图的 barrier。
+struct RenderTargetAttachment {
+    ResourceHandle resource;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    VkAttachmentStoreOp store_op = VK_ATTACHMENT_STORE_OP_STORE;
+    VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    VkAttachmentStoreOp stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    bool depth_stencil = false;
+};
+
+// executor 持有的 render pass + framebuffer（按附件视图缓存，帧间复用）。
+struct RenderTarget {
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkExtent2D extent{};
 };
 
 // 设备侧执行器：把 FrameGraph 的资源声明落实为真实的 VkImage / VkBuffer，按编译结果
@@ -70,6 +91,11 @@ public:
     [[nodiscard]] VkImage image(ResourceHandle handle) const noexcept;
     [[nodiscard]] VkImageView image_view(ResourceHandle handle) const noexcept;
     [[nodiscard]] VkBuffer buffer(ResourceHandle handle) const noexcept;
+
+    // 用图资源（含导入资源）拼出兼容现有 VkRenderPass 管线的 render pass + framebuffer；
+    // 附件 layout 固定为传入的 layout，同步来自图的 barrier。返回对象由 executor 持有。
+    [[nodiscard]] const RenderTarget* acquire_render_target(const FrameGraph& graph,
+                                                            std::span<const RenderTargetAttachment> attachments);
 
     [[nodiscard]] const std::string& get_error() const noexcept;
     [[nodiscard]] const Stats& get_stats() const noexcept;

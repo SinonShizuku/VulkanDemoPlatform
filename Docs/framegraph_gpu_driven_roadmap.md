@@ -553,7 +553,8 @@ executor 行为：
 - 导入资源通过 `import_texture` / `import_buffer` 绑定（swapchain image、外部 buffer）；
 - 录制 barrier：设备启用 synchronization2 时用 `vkCmdPipelineBarrier2`，否则把 sync2 的 stage/access 翻译成兼容的旧路径 `vkCmdPipelineBarrier`（WAR 仍只做执行依赖）；
 - 图每帧重建，但 transient 纹理会记住上一帧结束时的 layout：录制时把规划里的 `UNDEFINED` 起跳换成真实 layout，画布这类需要保留内容的资源因此不会被每帧丢弃；
-- pass 回调通过 `PassContext::user_data` 拿到 `FrameGraphExecution`（命令缓冲 + 资源访问器）。
+- pass 回调通过 `PassContext::user_data` 拿到 `FrameGraphExecution`（命令缓冲 + 资源访问器）；
+- render target 支持：`acquire_render_target()` 用图资源（含导入的 swapchain image）拼出与现有 `VkRenderPass` 管线兼容的 render pass + framebuffer，附件 layout 固定为图规划的 layout（pass 内没有隐式转换），按附件视图缓存复用。
 
 Demo 行为（`FrameGraphOffScreenTest`）：
 
@@ -572,7 +573,8 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 
 - 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位是 legacy 屏幕路径本身还是本 Demo 参数问题；下一步把 Composite 也改成 dynamic rendering（图直接管理 swapchain image 与 present 转换）后再验证；
 - swapchain image 与 ImGui pass 尚未纳入图，图目前只负责离屏画布；
-- queue family ownership transfer、transient 内存复用、冗余 barrier 消除仍未实现。
+- queue family ownership transfer、transient 内存复用、冗余 barrier 消除仍未实现；
+- BasicRendering 迁移进行中：executor 的 render target 能力已就位，但 `glTFLoading` 的迁移尝试在真实运行中初始化失败（`Failed to switch to default demo!`，PTY 下稳定复现；隐藏窗口后台运行偶尔能进入帧循环），失败点尚未定位，因此已回退该 demo 的改动、master 保持可用。下一步先定位这次初始化失败，再迁移 glTF 与 ShadowMapping。
 
 ## 6. Synchronization 与 FrameContext 设计
 
