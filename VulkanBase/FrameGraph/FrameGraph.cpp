@@ -350,7 +350,7 @@ bool FrameGraph::compile() {
     return true;
 }
 
-void FrameGraph::execute() {
+void FrameGraph::execute(void* user_data) {
     if (!compiled_) {
         if (error_.empty()) {
             error_ = "FrameGraph 尚未编译，无法执行";
@@ -363,6 +363,7 @@ void FrameGraph::execute() {
         context.pass = &pass;
         context.image_barriers = pass.image_barriers;
         context.buffer_barriers = pass.buffer_barriers;
+        context.user_data = user_data;
 
         if (begin_pass_callback_) {
             begin_pass_callback_(context);

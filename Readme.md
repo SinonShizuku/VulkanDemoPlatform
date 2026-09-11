@@ -19,7 +19,10 @@ FrameGraph v1 核心已落地（device-free，可单元测试）：
 
 - `VulkanBase/FrameGraph/` 提供资源 / pass 声明、依赖分析、生命周期统计与 barrier 规划；
 - 18 个单元测试（`Tests/FrameGraphTests`，123 项断言）覆盖 RAW / WAR / WAW、layout 转换、读后读省略、同 pass 合并、导入资源初始状态、非法依赖环等场景；
-- 仍未实现：设备端 executor（真实资源分配与 `vkCmdPipelineBarrier2` 录制）、OffScreen / ShadowMapping / Deferred 迁移、validation layer 实测。
+- 设备端 executor（`VulkanBase/FrameGraph/FrameGraphExecutor.*`）已实现：按图声明创建/复用真实 image 与 buffer、录制 barrier（synchronization2 或旧路径）、执行 pass 回调；
+- 第一份图驱动 Demo `FrameGraphOffScreenTest`：离屏画布的创建与两次 layout 转换完全由图生成，实跑 60 FPS，validation 没有新增错误；
+- 已知问题：该 Demo 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位；swapchain image / ImGui pass 仍未纳入图；
+- 仍未实现：OffScreen / ShadowMapping / Deferred 的正式迁移、validation layer 零错误的端到端达标。
 
 尚未实现，不能对外陈述为已完成：
 

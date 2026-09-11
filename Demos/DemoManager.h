@@ -13,6 +13,7 @@
 #include "VulkanTests/ImagelessFramebufferTest.h"
 #include "VulkanTests/DynamicRenderingTest.h"
 #include "VulkanTests/OffScreenRenderingTest.h"
+#include "VulkanTests/FrameGraphOffScreenTest.h"
 #include "VulkanTests/DepthAttachmentTest.h"
 #include "VulkanTests/DeferredRenderingTest.h"
 #include "BasicRendering/glTFLoading.h"
@@ -43,6 +44,12 @@ public:
         //     demo->set_window(window);
         //     return demo;
         // };
+
+        implemented_demos["FrameGraphOffScreenTest"] = [this]() {
+            auto demo = std::make_unique<FrameGraphOffScreenTest>();
+            demo->set_window(window);
+            return demo;
+        };
 
         implemented_demos["DepthAttachmentTest"] = []() {
             return std::make_unique<DepthAttachmentTest>();;

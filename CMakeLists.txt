@@ -157,6 +157,9 @@ add_executable(VulkanRenderer
     Demos/VulkanTests/ImagelessFramebufferTest.h
     Demos/VulkanTests/DynamicRenderingTest.h
     Demos/VulkanTests/OffScreenRenderingTest.h
+    Demos/VulkanTests/FrameGraphOffScreenTest.h
+    VulkanBase/FrameGraph/FrameGraphExecutor.cpp
+    VulkanBase/FrameGraph/FrameGraphExecutor.h
     Demos/VulkanTests/DepthAttachmentTest.h
     Demos/VulkanTests/DeferredRenderingTest.h
     Shader/ShaderLoader.h
@@ -190,6 +193,7 @@ target_link_libraries(VulkanRenderer
         glfw::glfw
         Vulkan::Vulkan
         ktx
+        FrameGraphCore
 )
 
 # 着色器以 GLSL 源码（*.shader）入库，运行期按 PROJECT_ROOT_PATH/Shader/**.spv
@@ -235,6 +239,12 @@ if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
             "shaderc_sharedd.dll was not found next to glslc; add <VulkanSDK>/Bin "
             "to PATH before running the Debug build.")
     endif()
+endif()
+
+# FrameGraphExecutor 会引用 Start.h / VulkanCore 等应用侧头文件，单独打开 /utf-8 避免
+# 中文注释在代码页 936 下产生 C4819 警告。
+if(MSVC)
+    set_source_files_properties(VulkanBase/FrameGraph/FrameGraphExecutor.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
 endif()
 
 if(MSVC)

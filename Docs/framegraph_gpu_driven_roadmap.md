@@ -79,6 +79,10 @@ out/build/windows-ninja-release
 - shaderc 改为使用 Vulkan SDK 自带库目录，不再依赖手工复制的 `External/lib`；
 - 干净工作区已完成 Debug / Release 构建，集成后的当前工作区完成 Debug 构建和 5 秒启动验证。
 
+### 2.1.1 构建系统的一个坑（已修）
+
+本地化（代码页 936）的 MSVC 输出会让 CMake/Ninja 的 dyndep 解析不到头文件依赖，表现为「只改头文件不重编译」，从而验证到旧二进制甚至定位错问题。`scripts/build.ps1` 现在显式设置 `$env:VSLANG = "1033"`；用本地化前缀配置过的构建目录需要删除后重新配置才会生效。
+
 ### 2.2 WIP 与工作区状态
 
 P0 构建和设备初始化改动已经提交到 `master`，当前工作区干净。上一轮遗留的“构建期编译着色器”未提交改动，先按“先隔离、再重构”的原则归档到独立分支，随后 fast-forward 合并回 `master`，没有混入 FrameGraph 提交：
@@ -527,6 +531,48 @@ FrameGraph 'DeferredPreview': compiled=true passes=4 resources=4 image_barriers=
 ```
 
 ---
+
+### 5.7 第二切片：设备端 executor 与第一份 graph 驱动 Demo（已实现）
+
+提交：分支 `codex/framegraph-executor`（尚未合并）。
+
+文件：
+
+```text
+VulkanBase/FrameGraph/
+  FrameGraphExecutor.h/.cpp   设备侧执行器：落实资源 + 录制 barrier + 执行 pass
+Demos/VulkanTests/
+  FrameGraphOffScreenTest.h   OffScreenRenderingTest 的 graph 版本（第一份图驱动 Demo）
+```
+
+executor 行为：
+
+- transient 纹理按 `TextureDesc` 创建真实 `VkImage` + 显存 + `VkImageView`，usage 用 `to_vk_image_usage` 转换；
+- transient buffer 按 `BufferDesc` 创建 `VkBuffer` + 显存；
+- 资源按「名字 + 描述」缓存复用，描述变化时重建，图中不再出现的自动释放；
+- 导入资源通过 `import_texture` / `import_buffer` 绑定（swapchain image、外部 buffer）；
+- 录制 barrier：设备启用 synchronization2 时用 `vkCmdPipelineBarrier2`，否则把 sync2 的 stage/access 翻译成兼容的旧路径 `vkCmdPipelineBarrier`（WAR 仍只做执行依赖）；
+- 图每帧重建，但 transient 纹理会记住上一帧结束时的 layout：录制时把规划里的 `UNDEFINED` 起跳换成真实 layout，画布这类需要保留内容的资源因此不会被每帧丢弃；
+- pass 回调通过 `PassContext::user_data` 拿到 `FrameGraphExecution`（命令缓冲 + 资源访问器）。
+
+Demo 行为（`FrameGraphOffScreenTest`）：
+
+- 每帧声明两张图资源与两个 pass：`DrawCanvas`（dynamic rendering 写 transient 画布）、`Composite`（采样画布）；
+- 画布创建、`UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL`、`COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL` 全部由图生成，Demo 内没有手写 barrier；
+- ImGui 面板实时显示 barrier 录制路径与 barrier 统计。
+
+验证记录（2026-09-12，RTX 5090 D / 驱动 596.36 / Vulkan SDK 1.4.357.0）：
+
+- `build.ps1 -Configuration Debug` 构建通过，`FrameGraphTests.exe` 仍为 18 用例 / 123 断言全通过；
+- 新 Demo 以 60 FPS 稳定运行，ImGui 显示 `image barriers (last frame): 2`、`layout_transitions=2`、`elided=0`，与图规划一致；
+- validation layer 输出与改动前一致：只有既有的 3 条错误（render pass `LOAD`+`UNDEFINED`、`lineWidth=0`、present semaphore 跨 swapchain image 复用），没有新增与本切片相关的错误；
+- 本机设备未启用 synchronization2，因此实跑走的是旧路径 barrier 录制分支（sync2 分支已实现但未在设备上跑到）。
+
+已知问题（不要当成已完成）：
+
+- 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位是 legacy 屏幕路径本身还是本 Demo 参数问题；下一步把 Composite 也改成 dynamic rendering（图直接管理 swapchain image 与 present 转换）后再验证；
+- swapchain image 与 ImGui pass 尚未纳入图，图目前只负责离屏画布；
+- queue family ownership transfer、transient 内存复用、冗余 barrier 消除仍未实现。
 
 ## 6. Synchronization 与 FrameContext 设计
 

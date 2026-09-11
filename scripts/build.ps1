@@ -134,6 +134,10 @@ function Get-VulkanSdkRoot {
     return $candidate.FullName
 }
 
+# MSVC 依赖扫描依赖英文的 "Note: including file:" 前缀；本地化（如中文代码页）会让 CMake
+# 的 dyndep 收不到头文件依赖，从而漏掉 "只改头文件" 的增量重编译。这里强制英文诊断。
+$env:VSLANG = "1033"
+
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 if (-not [System.IO.Path]::IsPathRooted($ExternalDir)) {
     $ExternalDir = Join-Path $repositoryRoot $ExternalDir

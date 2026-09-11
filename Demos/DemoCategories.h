@@ -21,6 +21,7 @@ inline std::unordered_map<std::string,std::vector<DemoType>> demos = {
         "ImagelessFramebufferTest",
         "DynamicRenderingTest",
         "OffScreenRenderingTest",
+        "FrameGraphOffScreenTest",
             "DepthAttachmentTest",
             "DeferredRenderingTest"
         }

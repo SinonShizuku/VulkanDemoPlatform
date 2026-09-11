@@ -84,7 +84,7 @@ public:
     // v1：按编译顺序调用每个 pass 的回调，并把该 pass 之前应提交的 barrier 交给回调。
     // begin_pass_callback 供上层（后续 executor）统一录制 barrier。
     void set_begin_pass_callback(BeginPassCallback callback) { begin_pass_callback_ = std::move(callback); }
-    void execute();
+    void execute(void* user_data = nullptr);
 
     // ------------------------------------------------- PassBuilder 内部接口
 
