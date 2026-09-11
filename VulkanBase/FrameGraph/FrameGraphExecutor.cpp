@@ -410,12 +410,26 @@ const RenderTarget* FrameGraphExecutor::acquire_render_target(const FrameGraph& 
     subpass.pColorAttachments = references.empty() ? nullptr : references.data();
     subpass.pDepthStencilAttachment = depth_index >= 0 ? &depth_reference : nullptr;
 
+    // 现有 demo 的管线是对着 RHI 的 render pass 创建的；render pass 兼容性要求
+    // subpass 依赖数量与 src/dst subpass 一致，因此这里复刻 RHI 的那条外部依赖。
+    // 真正的同步仍由图生成的 barrier 提供，这条依赖只是兼容性所需。
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
     VkRenderPassCreateInfo render_pass_info{};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_info.attachmentCount = static_cast<uint32_t>(descriptions.size());
     render_pass_info.pAttachments = descriptions.data();
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
+    render_pass_info.dependencyCount = 1;
+    render_pass_info.pDependencies = &dependency;
     if (entry->render_pass.create(render_pass_info) != VK_SUCCESS) {
         impl_->error = std::format("创建 render target 的 render pass 失败（附件数 {}）", descriptions.size());
         return nullptr;

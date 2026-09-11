@@ -69,6 +69,10 @@ struct GraphicsPipelineCreateInfoPack {
     std::vector<VkDynamicState> dynamic_states;
     //--------------------
     GraphicsPipelineCreateInfoPack() {
+        // lineWidth 在未启用 wideLines 且不是动态状态时必须是 1.0：结构体零初始化为 0 会触发
+        // VUID-VkGraphicsPipelineCreateInfo-pDynamicStates-00749，部分 validation 配置会让
+        // vkCreateGraphicsPipelines 直接返回失败（表现为 demo 初始化失败）。
+        rasterization_state_create_info.lineWidth = 1.f;
         set_create_infos();
         //若非派生管线，createInfo.basePipelineIndex不得为0，设置为-1
         create_info.basePipelineIndex = -1;
