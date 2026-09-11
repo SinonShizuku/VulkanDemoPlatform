@@ -574,7 +574,8 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 - 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位是 legacy 屏幕路径本身还是本 Demo 参数问题；下一步把 Composite 也改成 dynamic rendering（图直接管理 swapchain image 与 present 转换）后再验证；
 - swapchain image 与 ImGui pass 尚未纳入图，图目前只负责离屏画布；
 - queue family ownership transfer、transient 内存复用、冗余 barrier 消除仍未实现；
-- BasicRendering 迁移进行中：executor 的 render target 能力已就位，但 `glTFLoading` 的迁移尝试在真实运行中初始化失败（`Failed to switch to default demo!`，PTY 下稳定复现；隐藏窗口后台运行偶尔能进入帧循环），失败点尚未定位，因此已回退该 demo 的改动、master 保持可用。下一步先定位这次初始化失败，再迁移 glTF 与 ShadowMapping。
+- BasicRendering 迁移进行中，且前置阻塞已定位：executor 的 render target 能力已就位；`glTFLoading` 的迁移尝试在真实运行中初始化失败，随后用**未修改的** `glTFLoading` 复测同样失败（进程退出码 `0xC0000409`，后台隐藏窗口运行偶尔能进入帧循环），说明这是**既有问题、与 FrameGraph 迁移无关**。迁移该 demo 之前需要先定位这个既有崩溃，因此本轮已回退 demo 改动、master 保持可用。
+- 下一步顺序：① 定位 `glTFLoading` 既有初始化失败；② 用 executor 迁移 glTF（图持有 depth、render target 由 executor 提供）；③ 迁移 `ShadowMapping`（阴影 pass + 手写 barrier + SAT compute 系列 + 屏幕 pass），需要先在 executor 上补 compute/storage image 支持。
 
 ## 6. Synchronization 与 FrameContext 设计
 
