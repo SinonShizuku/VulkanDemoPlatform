@@ -8,7 +8,7 @@
 > Canonical repository：https://github.com/SinonShizuku/VulkanDemoPlatform
 > 本地 Git remote：`https://github.com/SinonShizuku/VulkanDemoPlatform`（2026-09-11 用 `git remote -v` 核实；`SinonShizuku/VulkanRenderer` 会重定向到该仓库）
 > P0 代码基线提交：`961065f`、`d2be67e`、`d04593f`
-> FrameGraph v1 第一切片：见 §5.6（分支 `codex/framegraph-v1`，尚未合并）
+> FrameGraph v1 第一切片：见 §5.6（已合并到 `master`，提交 `e1ab97a`）
 > 目标岗位：游戏引擎开发 / 图形渲染 / GPU 渲染工程 / 三维视觉工程
 
 ---
@@ -81,18 +81,19 @@ out/build/windows-ninja-release
 
 ### 2.2 WIP 与工作区状态
 
-P0 构建和设备初始化改动已经提交到 `master`，当前工作区干净。上一轮遗留的“构建期编译着色器”未提交改动，已按“先隔离、再重构”的原则归档到独立分支，没有混入 FrameGraph 提交：
+P0 构建和设备初始化改动已经提交到 `master`，当前工作区干净。上一轮遗留的“构建期编译着色器”未提交改动，先按“先隔离、再重构”的原则归档到独立分支，随后 fast-forward 合并回 `master`，没有混入 FrameGraph 提交：
 
 ```text
-codex/build-shader-pipeline   554efb5  build: compile shaders at build time with glslc
-变更文件：CMakeLists.txt、scripts/build.ps1、Readme.md
+554efb5  build: compile shaders at build time with glslc
+  变更文件：CMakeLists.txt、scripts/build.ps1、Readme.md
+  原分支：codex/build-shader-pipeline（已合并，可删除或保留作记录）
 ```
 
 处理原则：
 
 - 不在 FrameGraph 重构中直接覆盖既有 WIP；
 - 新重构使用独立分支与独立文件范围，不把构建/着色器改动混入 FrameGraph 提交；
-- 归档分支尚未合并到 `master`；合并前 `master` 没有构建期 `glslc` 规则，需要预先存在的 `Shader/**/*.spv` 才能运行；
+- `master` 现在具备构建期 `glslc` 规则：`Shader/**/*.shader` 在构建时增量编译为同名 `.spv`，Debug 还会把 `shaderc_sharedd.dll` 自动部署到可执行文件旁；
 - 早期文档列出的部分 PBR/IBL WIP 文件（例如 `Demos/PBR/IBL.h`、`Interaction/Material.h`、`Interaction/Texture.cpp`）在当前工作区中已不存在，这里保留为历史记录。
 
 ### 2.3 本机 GPU 与 Vulkan 能力
@@ -456,7 +457,7 @@ add pass
 
 ### 5.6 v1 第一切片：已实现状态
 
-分支：`codex/framegraph-v1`（尚未合并）。这一切片只做“不接触 Vulkan 对象”的部分，因此可以在没有 GPU、没有 device 的情况下验证。
+提交：`e1ab97a`（已 fast-forward 合并到 `master`）。这一切片只做“不接触 Vulkan 对象”的部分，因此可以在没有 GPU、没有 device 的情况下验证。
 
 文件：
 
@@ -510,6 +511,7 @@ graph.execute();                                   // v1：按编译顺序回调
 - `FrameGraphCore` 与 `FrameGraphTests` 编译通过，新增文件 0 warning；
 - `FrameGraphTests.exe`：18 个用例、123 项断言全部通过（exit code 0）；
 - `ctest --test-dir <build> --output-on-failure`：`1/1 Test #1: FrameGraphTests ... Passed`；
+- 与构建期 `glslc` 改动合并后，`.\scripts\build.ps1 -Configuration Debug` 一键配置与构建成功（含 `VulkanRendererShaders` 与 `shaderc_sharedd.dll` 部署），`ctest` 与测试可执行文件仍为 18 用例 / 123 断言全通过；
 - 用一组接近迁移目标的 pass（Shadow -> GBuffer -> Lighting -> Present）跑通 `compile()` / `dump()`，输出示例：
 
 ```text
