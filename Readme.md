@@ -15,10 +15,17 @@ P0 构建与设备初始化已完成：
 - Debug 构建和启动测试已在 `AMD Radeon(TM) Graphics` / Vulkan `1.3.217` / Vulkan SDK `1.4.313.1` 上验证；
 - 构建与运行也在 `NVIDIA GeForce RTX 5090 D` / 驱动 `596.36` / Vulkan SDK `1.4.357.0` / Visual Studio `18.10` 上验证（`BuffersAndPictureTest`、`ShadowMapping` 均以 60 FPS 正常渲染）。
 
+FrameGraph v1 核心已落地（device-free，可单元测试）：
+
+- `VulkanBase/FrameGraph/` 提供资源 / pass 声明、依赖分析、生命周期统计与 barrier 规划；
+- 18 个单元测试（`Tests/FrameGraphTests`，123 项断言）覆盖 RAW / WAR / WAW、layout 转换、读后读省略、同 pass 合并、导入资源初始状态、非法依赖环等场景；
+- 仍未实现：设备端 executor（真实资源分配与 `vkCmdPipelineBarrier2` 录制）、OffScreen / ShadowMapping / Deferred 迁移、validation layer 实测。
+
 尚未实现，不能对外陈述为已完成：
 
 - PBR / IBL 仍处于 WIP；
-- FrameGraph、Synchronization 2、Frames in Flight；
+- FrameGraph 驱动的渲染路径（当前只有 device-free 的图编译与 barrier 规划）；
+- Synchronization 2、Frames in Flight；
 - GPU-driven Rendering、Bindless、Indirect Draw；
 - Hardware Ray Tracing；
 - CSV / JSON Benchmark、P50 / P95 / P99 和报告体系。
@@ -91,6 +98,19 @@ glslc Shader/VulkanTests/Texture.vert.shader -o Shader/VulkanTests/Texture.vert.
 ```
 
 源文件使用 `#pragma shader_stage(...)` 声明阶段，因此无需额外传入 `-fshader-stage`。`Shader/**/*.spv` 是构建产物，已在 `.gitignore` 中忽略；运行期按 `PROJECT_ROOT_PATH/Shader/<相对路径>` 加载 SPIR-V，新增着色器后重新构建即可（`file(GLOB_RECURSE ... CONFIGURE_DEPENDS)` 会自动感知新增文件）。
+## 单元测试
+
+FrameGraph 核心不创建 `VkDevice`，可以在没有 GPU 的机器上运行：
+
+```powershell
+ctest --test-dir out/build/windows-ninja-debug --output-on-failure
+```
+
+也可以直接运行测试可执行文件：
+
+```powershell
+.\out\build\windows-ninja-debug\Tests\FrameGraphTests.exe
+```
 
 ## 依赖策略
 
@@ -106,4 +126,4 @@ cmake --preset windows-ninja-debug -DVULKAN_RENDERER_EXTERNAL_DIR=D:/path/to/Ext
 
 https://github.com/SinonShizuku/VulkanDemoPlatform
 
-本地 `origin` 仍使用旧地址 `git@github.com:SinonShizuku/VulkanRenderer.git`，GitHub 会将其重定向到当前 canonical repository。
+本地 `origin` 使用 `https://github.com/SinonShizuku/VulkanDemoPlatform`（2026-09-11 用 `git remote -v` 核实）；GitHub 上旧的 `SinonShizuku/VulkanRenderer` 会重定向到该仓库。

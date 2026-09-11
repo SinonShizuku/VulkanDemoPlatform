@@ -102,6 +102,27 @@ target_include_directories(ktx
 )
 target_link_libraries(ktx PUBLIC Vulkan::Vulkan)
 
+# FrameGraph v1 核心：只依赖 Vulkan 头文件，不创建 VkDevice，因此可以独立编译和单元测试。
+add_library(FrameGraphCore STATIC
+    VulkanBase/FrameGraph/FrameGraph.cpp
+    VulkanBase/FrameGraph/FrameGraphBarrier.cpp
+    VulkanBase/FrameGraph/FrameGraphCompiler.cpp
+    VulkanBase/FrameGraph/FrameGraph.h
+    VulkanBase/FrameGraph/FrameGraphBarrier.h
+    VulkanBase/FrameGraph/FrameGraphCompiler.h
+    VulkanBase/FrameGraph/FrameGraphTypes.h
+)
+
+target_include_directories(FrameGraphCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/VulkanBase/FrameGraph
+)
+target_link_libraries(FrameGraphCore PUBLIC Vulkan::Vulkan)
+
+if(MSVC)
+    target_compile_options(FrameGraphCore PRIVATE /utf-8)
+endif()
+
 add_executable(VulkanRenderer
     main.cpp
     Start.h
@@ -219,4 +240,9 @@ endif()
 if(MSVC)
     set_target_properties(VulkanRenderer PROPERTIES
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(Tests)
 endif()

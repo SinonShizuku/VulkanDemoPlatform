@@ -3,11 +3,12 @@
 > 文档状态：设计基线、实施路线与已验证进度
 > 建立日期：2026-09-11
 > 最近更新：2026-09-11
-> 项目路径：`D:/myself/GraphicLearning/Graphic_api/VulkanRenderer`
+> 项目路径：`D:/VulkanDemoPlatform`（当前工作副本；早期记录的 `D:/myself/GraphicLearning/Graphic_api/VulkanRenderer` 已不是本机工作目录）
 > 上游基础：https://github.com/SaschaWillems/Vulkan
 > Canonical repository：https://github.com/SinonShizuku/VulkanDemoPlatform
-> 本地 Git remote：`git@github.com:SinonShizuku/VulkanRenderer.git`（GitHub 重定向到 canonical repository）
-> P0 代码基线提交：`961065f`、`d2be67e`
+> 本地 Git remote：`https://github.com/SinonShizuku/VulkanDemoPlatform`（2026-09-11 用 `git remote -v` 核实；`SinonShizuku/VulkanRenderer` 会重定向到该仓库）
+> P0 代码基线提交：`961065f`、`d2be67e`、`d04593f`
+> FrameGraph v1 第一切片：见 §5.6（分支 `codex/framegraph-v1`，尚未合并）
 > 目标岗位：游戏引擎开发 / 图形渲染 / GPU 渲染工程 / 三维视觉工程
 
 ---
@@ -78,35 +79,21 @@ out/build/windows-ninja-release
 - shaderc 改为使用 Vulkan SDK 自带库目录，不再依赖手工复制的 `External/lib`；
 - 干净工作区已完成 Debug / Release 构建，集成后的当前工作区完成 Debug 构建和 5 秒启动验证。
 
-### 2.2 当前未提交 WIP
+### 2.2 WIP 与工作区状态
 
-P0 构建和设备初始化改动已经提交到 `master`；以下 WIP 仍保留在工作区，且不属于本次 P0 提交：
+P0 构建和设备初始化改动已经提交到 `master`，当前工作区干净。上一轮遗留的“构建期编译着色器”未提交改动，已按“先隔离、再重构”的原则归档到独立分支，没有混入 FrameGraph 提交：
 
 ```text
-.gitignore
-CMakeLists.txt
-Demos/BasicRendering/ShadowMapping.h
-Demos/BasicRendering/glTFLoading.h
-Demos/DemoBase3D.h
-Demos/DemoCategories.h
-Demos/PBR/IBL.h
-Geometry/Model.h
-Interaction/Material.h
-Interaction/Texture.cpp
-Interaction/Texture.h
-VulkanBase/components/VulkanTexture.h
-Shader/PBR/IBL/skybox.frag
-Shader/PBR/IBL/skybox.vert
-Assets/models/*
-Assets/textures/*
+codex/build-shader-pipeline   554efb5  build: compile shaders at build time with glslc
+变更文件：CMakeLists.txt、scripts/build.ps1、Readme.md
 ```
 
-这些内容必须视为现有 WIP：
+处理原则：
 
-- 不允许在 FrameGraph 重构中直接覆盖；
-- 开始大范围重构前，应决定是提交到独立分支，还是保留工作区；
-- 新重构应尽量使用独立文件范围，不把 PBR/IBL WIP 混入 FrameGraph 提交；
-- `Readme.md` 和 `Docs/framegraph_gpu_driven_roadmap.md` 已在本轮文档提交中同步。
+- 不在 FrameGraph 重构中直接覆盖既有 WIP；
+- 新重构使用独立分支与独立文件范围，不把构建/着色器改动混入 FrameGraph 提交；
+- 归档分支尚未合并到 `master`；合并前 `master` 没有构建期 `glslc` 规则，需要预先存在的 `Shader/**/*.spv` 才能运行；
+- 早期文档列出的部分 PBR/IBL WIP 文件（例如 `Demos/PBR/IBL.h`、`Interaction/Material.h`、`Interaction/Texture.cpp`）在当前工作区中已不存在，这里保留为历史记录。
 
 ### 2.3 本机 GPU 与 Vulkan 能力
 
@@ -182,7 +169,7 @@ https://github.com/SinonShizuku/VulkanDemoPlatform
 | 构建可复现性 | 可用 | 固定依赖版本、CMake Presets、一键恢复和构建；提交 `961065f` |
 | 设备 feature 初始化 | 已验证 | imageless framebuffer、dynamic rendering 在设备创建前显式启用；提交 `d2be67e` |
 | PBR / IBL | WIP | 本地 IBL 代码尚未形成可运行 demo，且未注册到 DemoManager |
-| FrameGraph | 未实现 | 目前每个 Demo 自行组织 Pass |
+| FrameGraph | v1 核心已落地（device-free） | 资源/Pass/依赖/生命周期/barrier 规划已有实现与 18 个单元测试（见 §5.6）；设备端 executor 与 Demo 迁移未开始 |
 | Synchronization 2 | 未实现 | 当前仍以旧 `vkCmdPipelineBarrier` 和单 fence 为主 |
 | Frames in Flight | 未实现 | 主循环每帧提交后立即等待 fence |
 | GPU-driven Rendering | 未实现 | 无 bindless、compute culling、indirect draw 主路径 |
@@ -204,8 +191,8 @@ P0 已修复：
 1. 单个共享 fence，单个 frame in flight；
 2. 提交后立即等待，CPU/GPU 无重叠；
 3. 每个 Demo 自己创建和录制 command buffer；
-4. 每个 Demo 自己手写 Barrier；
-5. 资源状态没有统一追踪；
+4. 每个 Demo 自己手写 Barrier（FrameGraph v1 已能在图编译阶段规划 barrier，但 Demo 尚未迁移）；
+5. 资源状态没有统一追踪（FrameGraph v1 内部已按资源跟踪 layout / stage / access，尚未接管真实资源）；
 6. 管线绑定传统 `VkRenderPass`；
 7. 没有 transient resource 和 memory aliasing；
 8. 没有统一的 GPU pass timing；
@@ -224,12 +211,13 @@ P0 已修复：
 - Deferred Rendering；
 - 可复现构建与固定依赖版本；
 - Vulkan device feature 查询、扩展降级路径和显式启用；
-- 上述能力的调试和 validation 分析。
+- 上述能力的调试和 validation 分析；
+- FrameGraph v1：资源/Pass/依赖建模、稳定拓扑排序、资源生命周期与 barrier 规划（device-free，含 18 个单元测试）。
 
 当前不能写“已实现”：
 
 - PBR / IBL；
-- FrameGraph；
+- FrameGraph 驱动的渲染路径（当前只有 device-free 的图编译与 barrier 规划）；
 - Synchronization 2；
 - Frames in Flight；
 - GPU-driven Rendering；
@@ -453,16 +441,88 @@ add pass
 
 ### 5.5 第一版必做测试
 
-- 线性依赖：Pass A -> Pass B；
-- 分支依赖：A -> B，A -> C；
-- 双写冲突：A 写资源，B 写同一资源；
-- 读写依赖：A 写，B 读；
-- 写后写依赖：A 写，B 写；
-- layout 转换：ColorAttachment -> Sampled；
-- cycle detection：非法依赖环应报错；
-- resource lifetime：识别 first/last use；
-- imported resource：正确使用外部初始状态；
-- validation layer：所有测试场景零错误。
+前 9 项已有 device-free 单元测试覆盖（`Tests/FrameGraphTests`）；最后一项需要设备端 executor，属于后续切片。
+
+- 线性依赖：Pass A -> Pass B；（已覆盖）
+- 分支依赖：A -> B，A -> C；（已覆盖）
+- 双写冲突：A 写资源，B 写同一资源；（已覆盖）
+- 读写依赖：A 写，B 读；（已覆盖）
+- 写后写依赖：A 写，B 写；（已覆盖）
+- layout 转换：ColorAttachment -> Sampled；（已覆盖）
+- cycle detection：非法依赖环应报错；（已覆盖，另有显式依赖 `depends_on` 的环检测）
+- resource lifetime：识别 first/last use；（已覆盖）
+- imported resource：正确使用外部初始状态；（已覆盖）
+- validation layer：所有测试场景零错误。（未覆盖：需要 executor 在设备上录制 barrier 后运行）
+
+### 5.6 v1 第一切片：已实现状态
+
+分支：`codex/framegraph-v1`（尚未合并）。这一切片只做“不接触 Vulkan 对象”的部分，因此可以在没有 GPU、没有 device 的情况下验证。
+
+文件：
+
+```text
+VulkanBase/FrameGraph/
+  FrameGraphTypes.h          资源描述、Usage、barrier 计划与统计类型（只依赖 vulkan.h 的枚举与位掩码）
+  FrameGraph.h/.cpp          资源 / pass 声明、compile()、execute()、dump()
+  FrameGraphCompiler.h/.cpp  依赖推导（RAW / WAR / WAW + 显式依赖）、稳定拓扑排序、生命周期统计
+  FrameGraphBarrier.h/.cpp   按执行顺序生成每个 pass 的 barrier 计划
+Tests/
+  TestHarness.h              不依赖第三方库的最小测试框架
+  FrameGraphTests/main.cpp   18 个用例 / 123 项断言
+```
+
+API 形态（与 §5.2 的概念 API 对齐）：
+
+```cpp
+framegraph::FrameGraph graph;
+auto color     = graph.create_texture(desc);                       // transient
+auto swapchain = graph.import_texture(desc, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, stage, access);
+
+graph.add_graphics_pass("Lighting")
+     .read(color, framegraph::usage::sampled_read())
+     .write(target, framegraph::usage::color_attachment_write())
+     .execute([&](framegraph::PassContext& ctx) { /* record draw */ });
+
+if (!graph.compile()) { log(graph.get_error()); }   // 环、非法 usage、transient 未写先读等
+log(graph.dump());                                 // pass、资源生命周期、每个 barrier 的来源
+graph.execute();                                   // v1：按编译顺序回调，并把 barrier 计划交给回调
+```
+
+已实现的 barrier 规则（v1）：
+
+- 跟踪每个资源最近一次访问的 layout / stage / access 与是否为写；
+- pass 之前把资源转换到本次访问需要的 layout，只在 RAW / WAR / WAW 或 layout 变化时插入 barrier；
+- 读后读且 layout 不变时不插入 barrier；同一 pass 内对同一资源的多次访问合并成一次 barrier；
+- WAR 只产生执行依赖（`srcAccess = 0`），RAW / WAW 才需要让前一次写的结果可见；
+- 导入资源使用调用方声明的初始状态（`initial_layout` / `initial_stages` / `initial_access`），transient 资源以 `UNDEFINED` 起步；
+- 每个 barrier 记录来源（`first use` / `imported initial state` / `read-after-write` / `write-after-read` / `write-after-write`），并统计 `image_barriers`、`buffer_barriers`、`layout_transitions`、`elided_barriers`。
+
+已知限制（不要当成已完成）：
+
+- 没有 executor：尚未分配真实 image / buffer，也没有 `vkCmdPipelineBarrier2` 录制，因此 validation layer 未参与验证；
+- 未实现 queue family ownership transfer（`src/dst_queue_family` 目前恒为 `VK_QUEUE_FAMILY_IGNORED`）；
+- 未实现 transient 资源内存复用（aliasing）、冗余 barrier 消除、async compute 重叠分析；
+- 同一 pass 内不允许对同一资源做不同 layout 的访问（v1 直接报错，而不是拆分 barrier）；
+- barrier 使用 synchronization2 的 stage/access 位；旧路径（`vkCmdPipelineBarrier`）的降级转换由后续 executor 负责。
+
+验证记录（2026-09-11，MSVC 19.51 / Ninja / Vulkan SDK 1.4.357.0）：
+
+- `FrameGraphCore` 与 `FrameGraphTests` 编译通过，新增文件 0 warning；
+- `FrameGraphTests.exe`：18 个用例、123 项断言全部通过（exit code 0）；
+- `ctest --test-dir <build> --output-on-failure`：`1/1 Test #1: FrameGraphTests ... Passed`；
+- 用一组接近迁移目标的 pass（Shadow -> GBuffer -> Lighting -> Present）跑通 `compile()` / `dump()`，输出示例：
+
+```text
+FrameGraph 'DeferredPreview': compiled=true passes=4 resources=4 image_barriers=8 layout_transitions=8
+  [2] LightingPass (graphics) declared=2
+      image barrier GBuffer: COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL [read-after-write]
+          src stage=COLOR_ATTACHMENT_OUTPUT access=COLOR_ATTACHMENT_WRITE
+          dst stage=FRAGMENT_SHADER access=SHADER_SAMPLED_READ
+  [3] Present (transfer) declared=3
+      image barrier SwapchainImage: COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR [write-after-write]
+          src stage=COLOR_ATTACHMENT_OUTPUT access=COLOR_ATTACHMENT_WRITE
+          dst stage=NONE access=NONE
+```
 
 ---
 
@@ -743,7 +803,7 @@ CSV / JSON 至少包含：
 
 未完成：
 
-- 决定 WIP 的最终提交策略；
+- ~~决定 WIP 的最终提交策略~~：已归档到 `codex/build-shader-pipeline`（`554efb5`），分支尚未合并；
 - 固化可运行的 Demo 清单；
 - 记录基线 FPS / CPU frame time；
 - 建立 Benchmark 元数据和报告输出。
@@ -762,9 +822,10 @@ CSV / JSON 至少包含：
 
 任务：
 
-- 实现 RenderGraph 资源、Pass、依赖；
-- 实现 barrier 生成；
-- 实现 imported / transient resource；
+- 实现 RenderGraph 资源、Pass、依赖；——图模型与依赖推导已完成（v1 第一切片，见 §5.6）
+- 实现 barrier 生成；——规划层已完成（同步语义 + 统计），设备端录制未开始
+- 实现 imported / transient resource；——声明与初始状态已支持，真实资源分配未开始
+- 实现 executor：真实 image / buffer 分配、`vkCmdPipelineBarrier2` 录制、每帧重建图的执行上下文；
 - 迁移 OffScreen；
 - 迁移 ShadowMapping；
 - 迁移 Deferred；
@@ -773,12 +834,12 @@ CSV / JSON 至少包含：
 
 验收：
 
-- 视觉结果一致；
-- validation 零错误；
-- 输出 barrier 统计；
-- 输出 graph dump；
-- 有 graph 单元测试；
-- 能解释每个 barrier 的来源。
+- 视觉结果一致；——未满足（Demo 尚未迁移）
+- validation 零错误；——未满足（需要 executor 在设备上跑起来）
+- 输出 barrier 统计；——已满足（`BarrierStats`）
+- 输出 graph dump；——已满足（`dump()`，含每个 barrier 的 reason / stage / access）
+- 有 graph 单元测试；——已满足（18 个用例 / 123 项断言，device-free）
+- 能解释每个 barrier 的来源；——已满足（`reason` 字段与依赖类型统计）
 
 ### P2：Frames in Flight
 
@@ -898,14 +959,15 @@ CSV / JSON 至少包含：
 当前执行顺序：
 
 1. canonical repository 已确认，P0 构建和设备初始化已提交到 `master`；
-2. 决定当前 PBR/IBL WIP 的提交、归档或暂存策略；
-3. 完成 P0 剩余部分：Demo 清单、基线 FPS / CPU frame time、GPU / driver 元数据；
-4. 开始 FrameGraph v1，优先完成资源、Pass、依赖、barrier 和单元测试；
-5. 迁移 OffScreen / ShadowMapping / Deferred，并以 Validation 结果作为验收；
-6. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
-7. 再加入 GPU-driven；
-8. 最后在 RTX 机器上加入光追；
-9. 全阶段持续积累 benchmark 数据。
+2. ~~决定 WIP 的归档策略~~：构建期着色器编译改动已归档到 `codex/build-shader-pipeline`（`554efb5`）；
+3. ~~开始 FrameGraph v1~~：图编译、依赖、生命周期、barrier 规划与单元测试已完成（见 §5.6）；
+4. 实现 FrameGraph executor：真实资源分配、`vkCmdPipelineBarrier2` 录制、每帧重建图与 barrier 统计输出；
+5. 完成 P0 剩余部分：Demo 清单、基线 FPS / CPU frame time、GPU / driver 元数据；
+6. 迁移 OffScreen / ShadowMapping / Deferred，并以 Validation 结果作为验收；
+7. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
+8. 再加入 GPU-driven；
+9. 最后在 RTX 机器上加入光追；
+10. 全阶段持续积累 benchmark 数据。
 
 核心原则：
 
