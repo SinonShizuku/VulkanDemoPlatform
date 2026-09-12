@@ -43,16 +43,54 @@ function Get-Bistro {
         return
     }
     if ([string]::IsNullOrWhiteSpace($BistroArchive) -or -not (Test-Path -LiteralPath $BistroArchive)) {
-        Write-Host "[bistro] skipped: 需要先接受许可并从 https://developer.nvidia.com/orca/amazon-lumberyard-bistro 下载，"
-        Write-Host "         然后运行： scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径>"
+        Write-Host "[bistro] skipped: 需要先接受许可并由 NVIDIA ORCA 下载（https://developer.nvidia.com/orca/amazon-lumberyard-bistro），"
+        Write-Host "         然后： scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径>"
         return
     }
     Write-Host "[bistro] expanding $BistroArchive"
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     Expand-Archive -LiteralPath $BistroArchive -DestinationPath $target -Force
+
+    # 引擎只读 glTF/GLB：ORCA 包是 FBX/OBJ，需要一次性转换（assimp 或 Blender 均可）。
+    $scenes = Get-ChildItem -LiteralPath $target -Recurse -File -Include *.fbx, *.obj -ErrorAction SilentlyContinue
+    if ($scenes.Count -eq 0) {
+        Write-Host "[bistro] 未找到 .fbx/.obj（请确认解压内容）"
+        return
+    }
+    $converter = $null
+    foreach ($candidate in @("assimp", "blender")) {
+        if (Get-Command $candidate -ErrorAction SilentlyContinue) { $converter = $candidate; break }
+    }
+    if ($converter -eq $null) {
+        Write-Host "[bistro] 已解压场景源文件，但没有找到转换器。安装其一后重跑本脚本："
+        Write-Host "         - assimp  : winget install assimp && assimp export BistroExterior.fbx BistroExterior.glb"
+        Write-Host "         - Blender : blender --background --python convert_bistro.py"
+        $scenes | Select-Object -First 5 | ForEach-Object { Write-Host ("         source: " + $_.FullName) }
+        return
+    }
+    foreach ($scene in $scenes) {
+        $glb = [System.IO.Path]::ChangeExtension($scene.FullName, ".glb")
+        if (Test-Path -LiteralPath $glb) { continue }
+        Write-Host ("[bistro] converting {0} -> {1}" -f $scene.Name, [System.IO.Path]::GetFileName($glb))
+        if ($converter -eq "assimp") {
+            & assimp export $scene.FullName $glb 2>&1 | Write-Host
+        }
+        else {
+            $script = @"
+import bpy, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.fbx(filepath=argv[0])
+bpy.ops.export_scene.gltf(filepath=argv[1], export_format="GLB")
+"@
+            $tmp = Join-Path $env:TEMP ("bistro-convert-" + [guid]::NewGuid().ToString("N") + ".py")
+            Set-Content -LiteralPath $tmp -Value $script -Encoding UTF8
+            & blender --background --python $tmp -- $scene.FullName $glb 2>&1 | Write-Host
+            Remove-Item -LiteralPath $tmp -Force
+        }
+    }
     Write-Host "[bistro] -> $target"
 }
-
 if ($Scene -in @("all", "sponza")) { Get-Sponza }
 if ($Scene -in @("all", "bistro")) { Get-Bistro }
 

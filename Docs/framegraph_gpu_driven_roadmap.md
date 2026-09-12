@@ -1199,6 +1199,24 @@ VulkanRenderer --demo <名称> [--scene <资产>] --frames <N> [--warmup <M>] [-
 | `ShadowMapping`（2048² 阴影 + SAT） | 1.092 / 2.200 / 4.259 | 0.242 / 0.457 / 1.087 |
 
 **这两个 GPU 数字只用于相对比较，暂不能当结论**：绝对量级偏小（ShadowMapping 的 2048² 阴影 + SAT 链理论上不止 0.24 ms），需要先做三件事再采信：① 校验 graphics queue 的 `timestampValidBits`、确认帧内没有第二次 reset；② 加 **per-pass timestamp**，让各 pass 之和与整帧对上；③ 用重负载（后续的 10 万实例）确认数值随负载增长。CPU 侧的数字可以直接用（ShadowMapping 的 p99 4.26 ms 已经反映 SAT 提交的 CPU 开销）。
+### 14.1.1 Bistro 获取与"相机路径"策略（2026-09-12 定）
+
+**Bistro 获取**：Bistro 在 NVIDIA ORCA 许可下发布，**必须人工接受许可后下载**，脚本只负责解包与转换提示：
+
+```powershell
+# 1) 从 https://developer.nvidia.com/orca/amazon-lumberyard-bistro 下载 zip（接受许可）
+# 2) 解包 + （可选）转成引擎能读的 GLB
+pwsh scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径>
+```
+
+ORCA 包是 **FBX/OBJ**，引擎只读 glTF/GLB，所以脚本会：解包 → 找 `*.fbx/*.obj` → 若有 `assimp` 或 `blender` 就自动转 GLB（Blender 走 `--background --python` 一次性脚本），否则打印可直接照做的命令。转换后的 GLB 与原始资产都放在被忽略的 `Assets/benchmark/Bistro/`。
+
+**相机路径：没有官方"benchmark 用"的推荐路径**。ORCA 包里有原版 Lumberyard demo 的相机动画数据（在 FBX/关卡里），但 Amazon / NVIDIA 并未发布统一的评测机位规范；各家（NVIDIA RTX demo、3DMark、vkmark 等）用的是**各自的固定 viewpoint**。因此本项目采用下面这条可复现策略：
+
+1. **默认固定机位**：每个场景定义 2–3 个固定 viewpoint（Bistro 计划 `bistro_view_0/1/2`，覆盖"远景大量小物件"与"近景高 LOD"两种负载）；固定机位的数字最可比，跨版本/跨机器都能对齐；
+2. **可选确定性动态路径**：需要动态时用**代码里定义的样条/圆周 + 固定帧数**（例如 `bistro_orbit` = 600 帧整圈，方位角 = 2π·(frame/600)），绝不使用自由飞行；
+3. **路径 ID 进元数据**：`summary.csv` 记录 `camera_path`（计划随 `--camera-path <fixed|orbit|...>` 一起落地），保证"每个数字能回指到某条确定路径"；
+4. 相机由**帧号**驱动而不是墙钟时间，保证同样的 `--frames` 在任何机器上看到同一段画面。
 ### 14.2 Benchmark 口径（与 §9 一致，硬约束）
 
 - 固定相机路径、分辨率、warmup 帧与采样帧数；
