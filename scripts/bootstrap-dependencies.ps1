@@ -45,6 +45,13 @@ $dependencies = @(
         CopyPaths   = @("include", "other_include", "lib", "LICENSE.md", "NOTICE.md")
     },
     [pscustomobject]@{
+        Name        = "assimp"
+        Uri         = "https://github.com/assimp/assimp/archive/refs/tags/v6.0.5.zip"
+        ArchiveRoot = "assimp-6.0.5"
+        Marker      = "include/assimp/Importer.hpp"
+        CopyPaths   = @(".")
+    },
+    [pscustomobject]@{
         Name        = "stb"
         Uri         = "https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.zip"
         ArchiveRoot = "stb-2c980bb59875b0d32144a71867fbdebb2f77cd20"
