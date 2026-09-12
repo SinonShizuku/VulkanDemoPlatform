@@ -8,10 +8,11 @@
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
-        if ((argument == "--frames" || argument == "--warmup" || argument == "--csv") && i + 1 < argc) {
+        if ((argument == "--frames" || argument == "--warmup" || argument == "--csv" || argument == "--instances") && i + 1 < argc) {
             const std::string value = argv[++i];
             if (argument == "--frames") benchmark_frames = std::stoi(value);
             else if (argument == "--warmup") benchmark_warmup = std::stoi(value);
+            else if (argument == "--instances") benchmark_instances = std::stoi(value);
             else benchmark_csv = value;
             continue;
         }

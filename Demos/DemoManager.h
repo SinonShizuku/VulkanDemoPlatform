@@ -18,6 +18,7 @@
 #include "VulkanTests/DeferredRenderingTest.h"
 #include "BasicRendering/glTFLoading.h"
 #include "BasicRendering/ShadowMapping.h"
+#include "BasicRendering/InstancedSceneTest.h"
 
 class DemoManager {
 public:
@@ -61,6 +62,10 @@ public:
 
         implemented_demos["Loading & Rendering glTF Model"] = [this]() {
             return std::make_unique<glTFLoading>(window);
+        };
+
+        implemented_demos["InstancedScene"] = [this]() {
+            return std::make_unique<InstancedSceneTest>(window);
         };
 
         implemented_demos["ShadowMapping"] = [this]() {
