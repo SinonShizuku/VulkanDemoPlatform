@@ -20,15 +20,15 @@ FrameGraph v1 核心已落地（device-free，可单元测试）：
 - `VulkanBase/FrameGraph/` 提供资源 / pass 声明、依赖分析、生命周期统计与 barrier 规划；
 - 18 个单元测试（`Tests/FrameGraphTests`，123 项断言）覆盖 RAW / WAR / WAW、layout 转换、读后读省略、同 pass 合并、导入资源初始状态、非法依赖环等场景；
 - 设备端 executor（`VulkanBase/FrameGraph/FrameGraphExecutor.*`）已实现：按图声明创建/复用真实 image 与 buffer、录制 barrier（synchronization2 或旧路径）、执行 pass 回调，并可用图资源拼出兼容现有 `VkRenderPass` 管线的 render pass/framebuffer；
-- BasicRendering 的迁移进行中：`glTFLoading` 迁移尝试遇到初始化失败，已回退，详情见 Docs §5.7。
+- BasicRendering 迁移中：`glTFLoading` 已接入图（颜色=外部同步的 swapchain image，深度=图拥有的 transient 纹理），实跑 60 FPS；ShadowMapping / Deferred 尚未接入。
 - 第一份图驱动 Demo `FrameGraphOffScreenTest`：离屏画布的创建与两次 layout 转换完全由图生成，实跑 60 FPS，validation 没有新增错误；
 - 已知问题：该 Demo 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位；swapchain image / ImGui pass 仍未纳入图；
-- 仍未实现：OffScreen / ShadowMapping / Deferred 的正式迁移、validation layer 零错误的端到端达标。
+- 仍未实现：ShadowMapping / Deferred 的正式迁移；validation layer 未归零（ImGui render pass 的既有非法组合 + swapchain 同步问题）。
 
 尚未实现，不能对外陈述为已完成：
 
 - PBR / IBL 仍处于 WIP；
-- FrameGraph 驱动的渲染路径（当前只有 device-free 的图编译与 barrier 规划）；
+- FrameGraph 驱动的完整渲染路径（目前 2 个 demo 接入，其余 demo 仍走旧路径）；
 - Synchronization 2、Frames in Flight；
 - GPU-driven Rendering、Bindless、Indirect Draw；
 - Hardware Ray Tracing；

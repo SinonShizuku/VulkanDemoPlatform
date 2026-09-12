@@ -174,8 +174,8 @@ https://github.com/SinonShizuku/VulkanDemoPlatform
 | 构建可复现性 | 可用 | 固定依赖版本、CMake Presets、一键恢复和构建；提交 `961065f` |
 | 设备 feature 初始化 | 已验证 | imageless framebuffer、dynamic rendering 在设备创建前显式启用；提交 `d2be67e` |
 | PBR / IBL | WIP | 本地 IBL 代码尚未形成可运行 demo，且未注册到 DemoManager |
-| FrameGraph | v1 核心已落地（device-free） | 资源/Pass/依赖/生命周期/barrier 规划已有实现与 18 个单元测试（见 §5.6）；设备端 executor 与 Demo 迁移未开始 |
-| Synchronization 2 | 未实现 | 当前仍以旧 `vkCmdPipelineBarrier` 和单 fence 为主 |
+| FrameGraph | 核心 + executor 已落地 | 图编译、依赖、生命周期与 barrier 规划（§5.6，18 个单元测试）+ 设备端 executor（§5.7）；已接入 2 个 demo：`FrameGraphOffScreenTest`（图拥有离屏画布）、`glTFLoading`（图拥有 depth）；ShadowMapping / Deferred 迁移未开始 |
+| Synchronization 2 | 部分实现 | 图路径按 stage2/access2 规划 barrier，executor 支持 `vkCmdPipelineBarrier2`；本机设备未启用该 feature，实跑走旧路径翻译分支；主循环仍是单 fence + 每帧等待 |
 | Frames in Flight | 未实现 | 主循环每帧提交后立即等待 fence |
 | GPU-driven Rendering | 未实现 | 无 bindless、compute culling、indirect draw 主路径 |
 | Hardware RT | 未实现 | 本地无光追扩展，不能宣称已完成 |
@@ -196,13 +196,13 @@ P0 已修复：
 1. 单个共享 fence，单个 frame in flight；
 2. 提交后立即等待，CPU/GPU 无重叠；
 3. 每个 Demo 自己创建和录制 command buffer；
-4. 每个 Demo 自己手写 Barrier（FrameGraph v1 已能在图编译阶段规划 barrier，但 Demo 尚未迁移）；
-5. 资源状态没有统一追踪（FrameGraph v1 内部已按资源跟踪 layout / stage / access，尚未接管真实资源）；
+4. 每个 Demo 自己手写 Barrier —— **部分解决**：`FrameGraphOffScreenTest`、`glTFLoading` 的 barrier 已由图规划并录制；ShadowMapping、Deferred 与 Vulkan Tests 系列仍在手写或依赖 render pass 隐式转换；
+5. 资源状态没有统一追踪 —— **部分解决**：executor 已按图声明创建/复用真实 image、buffer，并跟踪 transient 纹理的跨帧 layout；swapchain image 仍归 RHI 的 render pass 管理（图的“外部同步资源”）；
 6. 管线绑定传统 `VkRenderPass`；
 7. 没有 transient resource 和 memory aliasing；
 8. 没有统一的 GPU pass timing；
 9. 没有 benchmark / correctness 基础设施；
-10. 已有 Validation 错误：RenderPass `LOAD` + `UNDEFINED` initialLayout、pipeline `lineWidth=0`、render-finished semaphore 跨 swapchain image 复用；
+10. 已有 Validation 错误：ImGui render pass 的 `LOAD` + `UNDEFINED` initialLayout；render-finished semaphore 跨 swapchain image 复用；图路径另触发 presentable image 的 acquire/layout 校验（需先把 swapchain 同步修好）。其中 pipeline `lineWidth=0` 已在 `602816f` 修复；
 11. PBR/IBL 目前不能作为已完成能力对外陈述。
 
 ### 2.7 简历事实边界
@@ -882,17 +882,17 @@ CSV / JSON 至少包含：
 - 实现 RenderGraph 资源、Pass、依赖；——图模型与依赖推导已完成（v1 第一切片，见 §5.6）
 - 实现 barrier 生成；——规划层已完成（同步语义 + 统计），设备端录制未开始
 - 实现 imported / transient resource；——声明与初始状态已支持，真实资源分配未开始
-- 实现 executor：真实 image / buffer 分配、`vkCmdPipelineBarrier2` 录制、每帧重建图的执行上下文；
-- 迁移 OffScreen；
-- 迁移 ShadowMapping；
-- 迁移 Deferred；
+- 实现 executor：真实 image / buffer 分配、`vkCmdPipelineBarrier2` 录制、每帧重建图的执行上下文；**已完成（§5.7）**
+- 迁移 OffScreen；**已完成**（`FrameGraphOffScreenTest`，图拥有离屏画布与两次 layout 转换）
+- 迁移 ShadowMapping；**未开始（下一步）**
+- 迁移 Deferred；**未开始**
 - 比较 legacy 和 graph 的行为；
 - 开启 validation layer。
 
 验收：
 
 - 视觉结果一致；——未满足（Demo 尚未迁移）
-- validation 零错误；——未满足（需要 executor 在设备上跑起来）
+- validation 零错误；——未满足：executor 已在设备上跑起来，剩余错误集中在 ImGui render pass 的既有非法组合与 swapchain 同步（presentable image acquire / semaphore 复用）
 - 输出 barrier 统计；——已满足（`BarrierStats`）
 - 输出 graph dump；——已满足（`dump()`，含每个 barrier 的 reason / stage / access）
 - 有 graph 单元测试；——已满足（18 个用例 / 123 项断言，device-free）
@@ -1018,9 +1018,9 @@ CSV / JSON 至少包含：
 1. canonical repository 已确认，P0 构建和设备初始化已提交到 `master`；
 2. ~~决定 WIP 的归档策略~~：构建期着色器编译改动已归档到 `codex/build-shader-pipeline`（`554efb5`）；
 3. ~~开始 FrameGraph v1~~：图编译、依赖、生命周期、barrier 规划与单元测试已完成（见 §5.6）；
-4. 实现 FrameGraph executor：真实资源分配、`vkCmdPipelineBarrier2` 录制、每帧重建图与 barrier 统计输出；
-5. 完成 P0 剩余部分：Demo 清单、基线 FPS / CPU frame time、GPU / driver 元数据；
-6. 迁移 OffScreen / ShadowMapping / Deferred，并以 Validation 结果作为验收；
+4. ~~实现 FrameGraph executor~~：已完成（真实资源分配、barrier 录制、pass 执行、render target 生成）；已接入 `FrameGraphOffScreenTest` 与 `glTFLoading`；
+5. 修 swapchain 同步（validation 归零的关键）：每张 swapchain image 一个 render-finished semaphore（或 `VK_EXT_swapchain_maintenance1` + fence），并处理 ImGui render pass 的非法 initialLayout 组合；
+6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；
 7. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
 8. 再加入 GPU-driven；
 9. 最后在 RTX 机器上加入光追；
