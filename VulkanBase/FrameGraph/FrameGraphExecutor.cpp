@@ -576,6 +576,9 @@ void FrameGraphExecutor::execute(FrameGraph& graph, VkCommandBuffer command_buff
             ++impl_->stats.image_barriers;
         }
 
+        // benchmark：pass 开头写一个 GPU timestamp（per-pass 时间；帧首尾由 VulkanCommandBuffer 写）
+        benchmark_hook_pass(command_buffer, pass.name.c_str());
+
         for (const BufferBarrierPlan& plan : pass.buffer_barriers) {
             const VkBuffer buffer_handle = buffer(plan.resource);
             if (buffer_handle == VK_NULL_HANDLE) {

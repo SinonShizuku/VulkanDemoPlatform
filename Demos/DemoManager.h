@@ -266,7 +266,7 @@ public:
             shared_resources.get_shared_fence().wait_and_reset();
 
             if (benchmarking) {
-                const double gpu_ms = benchmark.resolve_gpu_ms();
+                const double gpu_ms = benchmark.resolve_and_record();
                 if (benchmark_frame_index >= static_cast<uint32_t>(benchmark_warmup))
                     benchmark.add_sample(frame_timer * 1000.0, gpu_ms);
                 ++benchmark_frame_index;
@@ -284,6 +284,13 @@ public:
                         std::string("gpu,") + properties.deviceName,
                         std::string("driver,") + std::format("{}.{}.{}", VK_VERSION_MAJOR(properties.driverVersion), VK_VERSION_MINOR(properties.driverVersion), VK_VERSION_PATCH(properties.driverVersion)),
                         std::string("vulkan_device,") + std::format("{}.{}.{}", VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion)),
+                        [] {
+                            std::string state = "unlocked";
+                            std::ifstream clock_state("out/benchmark/gpu-clock-state.txt");
+                            if (clock_state)
+                                std::getline(clock_state, state);
+                            return std::string("gpu_clock,") + state;
+                        }(),
                         std::string("vsync,0"),
                         std::string("warmup,") + std::to_string(benchmark_warmup),
                     };

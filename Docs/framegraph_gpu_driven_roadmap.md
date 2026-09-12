@@ -1210,6 +1210,33 @@ VulkanRenderer --demo <名称> [--scene <资产>] --frames <N> [--warmup <M>] [-
 
 **进度（2026-09-12，续）**：`ShadowMapping` 也已迁到 dynamic rendering 并通过验收——`Shadow`（ShadowDepth D16_UNORM + VSM R32G32_SFLOAT）与 `Scene` 两个 pass 都改成 `vkCmdBeginRendering`，管线用 `VkPipelineRenderingCreateInfo`，并补了空 body 的 `Present` pass 让图把 swapchain 图像留在 `PRESENT_SRC_KHR`（ImGui overlay 的 render pass 需要它）。验证：`--demo ShadowMapping` → exit 0、零 VUID、无 leaked、stderr 空、60 FPS；`FrameGraphTests` 129 checks / 0 failures。
 
+**per-pass GPU 时间（2026-09-12 完成）**
+
+- `BenchmarkRecorder` 的 query pool 扩成多 timestamp：slot 0 = 帧开始、slot 1..20 = 各 pass 起点、最后一个 = 帧结束；
+- 每个 pass 的起点由 **FrameGraph executor 统一写入**（`benchmark_hook_pass`，在 pass 的 barrier 之后、pass 回调之前），因此**任何接到图里的 demo 都自动有 per-pass 数据**；
+- 输出：`summary.csv` 里增加 `gpu_ms_p50[<pass 名>]` / `gpu_ms_p95[<pass 名>]`；
+- 注意：未使用的 slot 也必须写 timestamp，否则 `vkGetQueryPoolResults(WAIT_BIT)` 会永远等待（已修）。
+
+**对账结果（ShadowMapping，300 帧，RTX 5090 D）**
+
+| pass | GPU p50 (ms) |
+| --- | --- |
+| Shadow (2048² D16 + VSM) | 0.0100 |
+| SatRowBlock | 0.0411 |
+| SatRowScan | 0.0061 |
+| SatRowAdd | 0.0410 |
+| SatColBlock | 0.0389 |
+| SatColScan | 0.0061 |
+| SatColAdd | 0.0369 |
+| Scene | 0.0133 |
+| Present | 0.0077 |
+| **合计** | **≈ 0.201** |
+| **整帧（frame begin → end）** | **0.2011** |
+
+**结论**：各 pass 之和与整帧 GPU 时间**对上了**（这是之前列的采信条件之一），说明 timestamp 位置与读取都正确；同时得到一个可直接行动的事实——**SAT 链占了整帧 GPU 的 ~85%（0.17/0.20 ms）**，是当前最大的 GPU 热点（8 张 2048² RG32F 中间图 + 6 次 dispatch）。后续 GPU-driven 之前，如果要优化这是第一优先级；如果只是 benchmark，则知道该盯哪一段。
+
+**GPU 锁频（2026-09-12）**：`scripts/lock-gpu-clocks.ps1 -Action lock|restore|status`，锁频状态会写进 `out/benchmark/gpu-clock-state.txt` 并被 benchmark 读进 `summary.csv` 的 `gpu_clock` 字段。注意 `nvidia-smi -lgc/-rgc` **需要管理员权限**（本机实测非管理员会失败并给出提示），所以正式采集时要开一个提权的 PowerShell 先 lock 再跑。
+
 ### 14.4 命令行（2026-09-12 加入）
 
 ```text
@@ -1228,3 +1255,38 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 顺带修掉一个真实缺陷：`glTFLoading` 的载入器要求每个材质都有 base color 贴图，遇到无贴图模型（`TeapotsAndPillars.gltf`）会越界崩溃；现在无贴图时补一张 1x1 白色贴图并 clamp 材质索引，`--scene TeapotsAndPillars.gltf` 实跑 exit 0 / 零 VUID / 60 FPS。
 
 下一步（按需，不再强求迁移老 demo）：`FrameGraphOffScreenTest` 的合成 pass → 其余 VulkanTests（可选）；主线优先级是 §14.1 的场景接入 + GPU-driven。
+
+## 15. NVIDIA Profile 采集清单（Nsight Graphics / Nsight Systems）
+
+定位：**Nsight 用于归因，不作为 benchmark 数字来源**（有插桩开销、不可复现、不能 CI）。简历数字一律取 §14.2 的 CSV；Nsight 的结论以"分析证据"形式保存（截图 + 结论 + 工具版本），trace 文件不入库。
+
+**准备**
+
+- 安装 NVIDIA Nsight Graphics 与 Nsight Systems（本机 2026-09-12 检查：**未安装**）；
+- 在 NVIDIA App / 驱动设置里允许访问 GPU 性能计数器（部分计数器需管理员）；
+- 采集前先 `scripts/lock-gpu-clocks.ps1 -Action lock`（提权），结束后 `-Action restore`；
+- 用 `--demo/--scene` 固定场景，采集窗口固定分辨率。
+
+**三个固定采集场景**
+
+| 场景 | 命令 | 关注点 |
+| --- | --- | --- |
+| 屏障最密 | `--demo ShadowMapping` | SAT 链 6 次 dispatch 之间是否有气泡；barrier 是否多余 |
+| 真实场景 | `--demo glTFLoading --scene Assets/benchmark/Sponza/glTF/Sponza.gltf` | 逐 pass 时间与 draw 数量、纹理带宽 |
+| GPU-driven（待建） | `sponza_instanced_100k` | culling compute 占用率、indirect draw 数量、Hi-Z 成本 |
+
+**每个场景只回答这三个问题（避免变成漫无目的看波形）**
+
+1. 我们引擎内写的 timestamp 是否可信：GPU Trace 时间线的整帧耗时 vs `summary.csv` 的 `gpu_ms_p50`；
+2. 帧内是否存在 barrier/同步导致的气泡（GPU Trace 的 wait/stall 原因），特别是 SAT 链的 6 次 dispatch；
+3. CPU 侧 0.96 ms 与 GPU 0.20 ms 的差距花在哪（Nsight Systems：驱动/提交/present/队列空转）。
+
+**记录模板**（每个 capture 一行，追加到 §15.1）：
+
+```text
+日期 | 场景 | 工具+版本 | 结论（1-3 条）| 证据文件（截图路径）| 对应 benchmark CSV
+```
+
+### 15.1 采集记录
+
+（待采集）
