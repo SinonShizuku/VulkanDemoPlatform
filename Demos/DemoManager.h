@@ -157,6 +157,21 @@ public:
         return true;
     }
 
+    // 供 --demo 使用：先按菜单名找，再按 demo 的 type 找（两者不同，例如 glTFLoading）。
+    std::unique_ptr<DemoBase> create_demo_by_name(const std::string& name) {
+        if (name.empty())
+            return nullptr;
+        if (auto it = implemented_demos.find(name); it != implemented_demos.end())
+            return it->second();
+        for (auto& entry : implemented_demos) {
+            auto candidate = entry.second();
+            if (candidate && candidate->get_type() == name)
+                return candidate;
+        }
+        outstream << "[ DemoManager ] 未找到 demo " << name << "（--demo 支持菜单名或 demo 类型名）\n";
+        return nullptr;
+    }
+
     bool switch_to_demo(std::unique_ptr<DemoBase> new_demo) {
         if (!new_demo)
             return false;

@@ -1174,4 +1174,23 @@ GPU-driven Rendering（bindless + compute culling + indirect draw）
 - `glTFLoading` 全链路改用 dynamic rendering：管线用 `VkPipelineRenderingCreateInfo`（不再绑 render pass），pass 内 `vkCmdBeginRendering` / `vkCmdEndRendering`；swapchain 图像**不再外部同步**，由图标出 `UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR`（末尾加了一个空 body 的 `Present` transfer pass，用 `usage::present()`）；
 - 验证（RTX 5090 D）：`glTFLoading` 作启动 demo（临时改动，仅用于验证）**exit code 0、零 VUID、无 leaked objects、stderr 为空、60 FPS**；默认路径 `BuffersAndPictureTest` exit 0 / 零 VUID；`FrameGraphTests` 129 checks / 0 failures。
 
-下一步：`FrameGraphOffScreenTest`（屏幕合成 pass）→ `ShadowMapping`（Shadow + Scene）→ 其余 VulkanTests；随后删除 RHI 的 render pass/framebuffer 与 `VulkanRenderPassWithFramebuffers.h`，把 `dynamicRendering` 设为硬性要求。
+**进度（2026-09-12，续）**：`ShadowMapping` 也已迁到 dynamic rendering 并通过验收——`Shadow`（ShadowDepth D16_UNORM + VSM R32G32_SFLOAT）与 `Scene` 两个 pass 都改成 `vkCmdBeginRendering`，管线用 `VkPipelineRenderingCreateInfo`，并补了空 body 的 `Present` pass 让图把 swapchain 图像留在 `PRESENT_SRC_KHR`（ImGui overlay 的 render pass 需要它）。验证：`--demo ShadowMapping` → exit 0、零 VUID、无 leaked、stderr 空、60 FPS；`FrameGraphTests` 129 checks / 0 failures。
+
+### 14.4 命令行（2026-09-12 加入）
+
+```text
+VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝对路径>]
+
+示例：
+  VulkanRenderer --demo glTFLoading
+  VulkanRenderer --demo ShadowMapping --scene TeapotsAndPillars.gltf
+  VulkanRenderer --scene Assets/models/FlightHelmet/glTF/FlightHelmet.gltf
+```
+
+- `--demo`：先按菜单名匹配，再按 demo 的 type 匹配（两者不同，例如 `Loading & Rendering glTF Model` vs `glTFLoading`）；找不到时打印可用提示并回落到默认 demo；
+- `--scene`：可用绝对路径，或 `Assets/models` 下的相对路径/名字（自动补 `.gltf`）；打开失败只打印 `[ Model ] Could not open the glTF file.` 不崩；
+- 目的：验收与后续 benchmark 不用再改代码切场景（此前验证都要临时改默认 demo）。
+
+顺带修掉一个真实缺陷：`glTFLoading` 的载入器要求每个材质都有 base color 贴图，遇到无贴图模型（`TeapotsAndPillars.gltf`）会越界崩溃；现在无贴图时补一张 1x1 白色贴图并 clamp 材质索引，`--scene TeapotsAndPillars.gltf` 实跑 exit 0 / 零 VUID / 60 FPS。
+
+下一步（按需，不再强求迁移老 demo）：`FrameGraphOffScreenTest` 的合成 pass → 其余 VulkanTests（可选）；主线优先级是 §14.1 的场景接入 + GPU-driven。

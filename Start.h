@@ -161,6 +161,31 @@ public:
 // 输出方式封装
 inline auto& outstream = std::cout;//不是constexpr，因为std::cout具有外部链接
 
+// 命令行参数（main.cpp 解析）：--demo <demo 名>、--scene <资产名或路径>
+inline std::string command_line_demo;
+inline std::string command_line_scene;
+
+// --scene 的解析规则：绝对路径直接用；否则先按 Assets/models/<name> 找，再按仓库根目录相对路径找，
+// 必要时补 .gltf 后缀；找不到时返回按 Assets/models 解析的结果，由调用方给出错误信息。
+inline std::filesystem::path resolve_scene_asset(const std::string& name) {
+    if (name.empty())
+        return {};
+    const std::filesystem::path candidate(name);
+    if (candidate.is_absolute() && std::filesystem::exists(candidate))
+        return candidate;
+    const std::filesystem::path under_assets = G_PROJECT_ROOT / "Assets/models" / candidate;
+    if (std::filesystem::exists(under_assets))
+        return under_assets;
+    const std::filesystem::path under_root = G_PROJECT_ROOT / candidate;
+    if (std::filesystem::exists(under_root))
+        return under_root;
+    std::filesystem::path with_extension = under_assets;
+    with_extension += ".gltf";
+    if (std::filesystem::exists(with_extension))
+        return with_extension;
+    return under_assets;
+}
+
 // 封装闭区间“在内”
 template<std::signed_integral T>
 constexpr bool between_closed(T min, T num, T max) {

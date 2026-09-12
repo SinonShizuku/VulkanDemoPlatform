@@ -127,7 +127,7 @@ public:
         color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
         scene_color_ = frame_graph_.import_texture(
             color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-            /*externally_synchronized=*/true);
+            /*externally_synchronized=*/false);
 
         frame_graph_.add_graphics_pass("Shadow")
             .write(shadow_depth_, framegraph::usage::depth_stencil_write())
@@ -181,6 +181,11 @@ public:
             .read(shadow_depth_, framegraph::usage::depth_stencil_sampled_read())
             .read(sat_final_, framegraph::usage::sampled_read())
             .execute([this](framegraph::PassContext& context) { record_scene_pass(context, scene_color_, scene_depth_); });
+        // 呈现前的最终过渡：由图标出 COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR
+        //（dynamic rendering 没有隐式布局转换，ImGui overlay 的 render pass 要求 PRESENT_SRC_KHR）
+        frame_graph_.add_transfer_pass("Present")
+            .write(scene_color_, framegraph::usage::present())
+            .execute([](framegraph::PassContext&) {});
 
         if (!frame_graph_.compile()) {
             outstream << std::format("[ ShadowMapping ] compile 失败: {}\n", frame_graph_.get_error());
@@ -257,6 +262,7 @@ private:
     float light_size = 2.5f;
     float light_fov = 45.f;
     VulkanglTFModel demo_scene;
+    std::string loaded_scene_name;
 
     // 屏幕 pass 已经接入 FrameGraph（图拥有 depth，颜色用外部同步的 swapchain image）
     framegraph::FrameGraph frame_graph_;
@@ -416,25 +422,17 @@ private:
               .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
               .depth_stencil = true },
         };
-        const framegraph::RenderTarget* target = executor_.acquire_render_target(
-            frame_graph_, attachments, VulkanPipelineManager::get_singleton().get_offscreen_subpass_dependencies());
-        if (!target) {
-            outstream << std::format("[ ShadowMapping ] 获取 shadow render target 失败: {}\n", executor_.get_error());
-            return;
-        }
-
         VkClearValue clear_values[2] = {
             {.color = { 1.0f, 1.0f, 0.0f, 0.0f }},
             {.depthStencil = { 1.f, 0 }}
         };
-        VkRenderPassBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        begin_info.renderPass = target->render_pass;
-        begin_info.framebuffer = target->framebuffer;
-        begin_info.renderArea = VkRect2D{ {}, target->extent };
-        begin_info.clearValueCount = 2;
-        begin_info.pClearValues = clear_values;
-        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        const framegraph::FrameGraphExecutor::DynamicRenderingTarget* target =
+            executor_.acquire_rendering_info(frame_graph_, attachments, clear_values);
+        if (!target) {
+            outstream << std::format("[ ShadowMapping ] 获取 shadow rendering info 失败: {}\n", executor_.get_error());
+            return;
+        }
+        vkCmdBeginRendering(cmd, &target->info);
         {
             VkViewport viewport = {
                 .width = static_cast<float>(shadow_map_size.width),
@@ -451,7 +449,7 @@ private:
                                     descriptor_sets.offscreen.Address(), 0, nullptr);
             draw(demo_scene, pipeline_layout_offscreen);
         }
-        vkCmdEndRenderPass(cmd);
+        vkCmdEndRendering(cmd);
     }
 
     // 屏幕 pass 的录制：render pass / framebuffer 由图（executor）提供。
@@ -475,25 +473,18 @@ private:
               .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
               .depth_stencil = true },
         };
-        const framegraph::RenderTarget* target = executor_.acquire_render_target(frame_graph_, attachments);
-        if (!target) {
-            outstream << std::format("[ ShadowMapping ] 获取 render target 失败: {}\n", executor_.get_error());
-            return;
-        }
-
         VkClearValue clear_values[2] = {
             {.color = { 0.f, 0.f, 0.f, 1.f }},
             {.depthStencil = { 1.f, 0 }}
         };
-        VkRenderPassBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        begin_info.renderPass = target->render_pass;
-        begin_info.framebuffer = target->framebuffer;
-        begin_info.renderArea = VkRect2D{ {}, target->extent };
-        begin_info.clearValueCount = 2;
-        begin_info.pClearValues = clear_values;
+        const framegraph::FrameGraphExecutor::DynamicRenderingTarget* target =
+            executor_.acquire_rendering_info(frame_graph_, attachments, clear_values);
+        if (!target) {
+            outstream << std::format("[ ShadowMapping ] 获取 rendering info 失败: {}\n", executor_.get_error());
+            return;
+        }
 
-        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRendering(cmd, &target->info);
         {
             VkViewport viewport = {
                 .width = static_cast<float>(window_size.width),
@@ -522,7 +513,7 @@ private:
                                     descriptor_sets.scene.Address(), 0, nullptr);
             draw(demo_scene, pipeline_layout);
         }
-        vkCmdEndRenderPass(cmd);
+        vkCmdEndRendering(cmd);
     }
     void update_uniform_data() {
         update_light();
@@ -607,7 +598,14 @@ private:
             if (current_demo_name != "ShadowMapping") return false;
             GraphicsPipelineCreateInfoPack pipeline_create_info_pack;
             pipeline_create_info_pack.create_info.layout = pipeline_layout;
-            pipeline_create_info_pack.create_info.renderPass = VulkanPipelineManager::get_singleton().get_rpwf_ds().render_pass;
+            // dynamic rendering：scene 管线用 VkPipelineRenderingCreateInfo 声明附件格式
+            const VkFormat scene_color_format = VulkanSwapchainManager::get_singleton().get_swapchain_create_info().imageFormat;
+            VkPipelineRenderingCreateInfo scene_rendering_info{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+            scene_rendering_info.colorAttachmentCount = 1;
+            scene_rendering_info.pColorAttachmentFormats = &scene_color_format;
+            scene_rendering_info.depthAttachmentFormat = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
+            pipeline_create_info_pack.create_info.renderPass = VK_NULL_HANDLE;
+            pipeline_create_info_pack.create_info.pNext = &scene_rendering_info;
             // 子通道只有一个，pipeline_create_info_pack.createInfo.renderPass使用默认值0
 
             // vertex buffer
@@ -665,7 +663,14 @@ private:
                 frag_offscreen.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
             );
             pipeline_create_info_pack.create_info.layout = pipeline_layout_offscreen;
-            pipeline_create_info_pack.create_info.renderPass = VulkanPipelineManager::get_singleton().get_rpwf_offscreen_ds().render_pass;
+            // offscreen 阴影管线同样使用 dynamic rendering（VSM=R32G32_SFLOAT，深度=D16_UNORM）
+            const VkFormat shadow_color_format = VK_FORMAT_R32G32_SFLOAT;
+            VkPipelineRenderingCreateInfo shadow_rendering_info{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+            shadow_rendering_info.colorAttachmentCount = 1;
+            shadow_rendering_info.pColorAttachmentFormats = &shadow_color_format;
+            shadow_rendering_info.depthAttachmentFormat = VK_FORMAT_D16_UNORM;
+            pipeline_create_info_pack.create_info.renderPass = VK_NULL_HANDLE;
+            pipeline_create_info_pack.create_info.pNext = &shadow_rendering_info;
             pipeline_create_info_pack.color_blend_state_create_info.attachmentCount = 1;
             pipeline_create_info_pack.rasterization_state_create_info.cullMode = VK_CULL_MODE_NONE;
             pipeline_create_info_pack.rasterization_state_create_info.depthBiasEnable = VK_TRUE;
@@ -971,7 +976,11 @@ private:
     }
 
     void load_assets() {
+        // --scene 指定时优先；否则用默认 TeapotsAndPillars。
         auto model_path = G_PROJECT_ROOT / "Assets/models/TeapotsAndPillars.gltf";
+        if (!command_line_scene.empty())
+            model_path = resolve_scene_asset(command_line_scene);
+        loaded_scene_name = model_path.filename().string();
         load_glTF_file(model_path.string());
     }
 

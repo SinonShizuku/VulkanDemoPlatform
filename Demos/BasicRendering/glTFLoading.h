@@ -138,6 +138,7 @@ private:
     VulkanPipeline pipeline_wireframe;
 
     VulkanglTFModel gltf_model;
+    std::string loaded_scene_name;
 
     // struct UniformData {
     //     glm::mat4 projection = flip_vertical(glm::perspective(glm::radians(60.0f), (float)window_size.width / (float)window_size.height, 0.1f, 256.0f));
@@ -366,9 +367,29 @@ private:
         std::vector<VulkanglTFModel::Vertex> vertex_buffer;
 
         if (file_loaded) {
+            // 没有贴图的模型（例如 TeapotsAndPillars）：补一张 1x1 白色贴图，
+            // 否则材质的 base color texture 索引无效，绘制时会越界/绑不到 descriptor set。
+            if (gltf_input.images.empty()) {
+                tinygltf::Image white_image;
+                white_image.width = 1;
+                white_image.height = 1;
+                white_image.component = 4;
+                white_image.bits = 8;
+                white_image.image = { 255, 255, 255, 255 };
+                gltf_input.images.push_back(white_image);
+                tinygltf::Texture white_texture;
+                white_texture.source = 0;
+                gltf_input.textures.push_back(white_texture);
+            }
             gltf_model.load_images(gltf_input);
             gltf_model.load_materials(gltf_input);
             gltf_model.load_textures(gltf_input);
+            for (auto& material : gltf_model.materials) {
+                if (material.base_color_texture_index < 0 ||
+                    material.base_color_texture_index >= static_cast<int>(gltf_model.textures.size())) {
+                    material.base_color_texture_index = 0;  // 无贴图材质回落到白色贴图
+                }
+            }
             const tinygltf::Scene& scene = gltf_input.scenes[0];
             for (int n : scene.nodes) {
                 const tinygltf::Node node = gltf_input.nodes[n];
@@ -395,7 +416,11 @@ private:
     }
 
     void load_assets() {
+        // --scene 指定时优先；否则用默认 FlightHelmet。
         auto model_path = G_PROJECT_ROOT / "Assets/models/FlightHelmet/glTF/FlightHelmet.gltf";
+        if (!command_line_scene.empty())
+            model_path = resolve_scene_asset(command_line_scene);
+        loaded_scene_name = model_path.filename().string();
         load_glTF_file(model_path.string());
     }
 

@@ -195,7 +195,12 @@ void VulkanAppLauncher::main_loop() {
     }
 
     // 创建并切换到默认场景
-    auto default_demo = std::make_unique<BuffersAndPictureTest>();
+    // --demo 指定时按名字创建；找不到或未指定时回落到默认 demo。
+    std::unique_ptr<DemoBase> default_demo;
+    if (!command_line_demo.empty())
+        default_demo = DemoManager::get_singleton().create_demo_by_name(command_line_demo);
+    if (!default_demo)
+        default_demo = std::make_unique<BuffersAndPictureTest>();
     if (!DemoManager::get_singleton().switch_to_demo(std::move(default_demo))) {
         outstream << std::format("[ MainLoop ]\nFailed to switch to default demo!\n");
         return;
