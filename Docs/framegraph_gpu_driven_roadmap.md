@@ -1308,7 +1308,7 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 
 下一步（按需，不再强求迁移老 demo）：`FrameGraphOffScreenTest` 的合成 pass → 其余 VulkanTests（可选）；主线优先级是 §14.1 的场景接入 + GPU-driven。
 
-### 14.5 多格式资产加载：assimp（2026-09-12 决策，2026-09-13 落地第一阶段）
+### 14.5 多格式资产加载：assimp（2026-09-12 决策，2026-09-13 落地第一、二阶段）
 
 **为什么需要**：Bistro（ORCA）只提供 FBX，San Miguel / Rungholt / Emerald Square 是 OBJ/PLY，而引擎目前只读 glTF/GLB（tinygltf）。要让这些"原生大场景"进管线，必须先解决格式问题。
 
@@ -1328,15 +1328,63 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 - **选型细节**：GitHub release 的 `windows-x64-v6.0.5.zip` **只有 DLL/PDB、没有头文件与 .lib**，C++ 无法直接用，因此改为源码固定版本 + CMake 构建（实测 160 个编译单元，1–2 分钟）；
 - **验证**：`scripts/build.ps1 -Configuration Debug` 全量通过，产出 `assimp-vc145-mtd.lib` 并成功链接进 `VulkanRenderer.exe`（应用行为未变）。
 
-**第二阶段（待做，§14.1 的 Bistro 基线依赖它）**
+**第二阶段（2026-09-13 落地第 1–3 条；第 4 条仍待做）**
 
 1. `Geometry/AssimpModelLoader.h`：把 `aiScene` 映射到**现有 `VulkanglTFModel` 结构**，复用 demo 已有 descriptor 流程：
    - 导入 flag：`aiProcess_Triangulate | PreTransformVertices | GenSmoothNormals | FlipUVs | JoinIdenticalVertices`（把节点层级烘进顶点，静态几何一步到位）；
    - 材质取 base color factor；贴图**先只接受 png/jpg/tga**，**DDS 跳过并告警**（Bistro 是 DDS-only，所以先出几何版本）；
    - 无贴图材质复用既有的 **1×1 白色兜底贴图**（`glTFLoading` 在 §5.11 之后已有该兜底）；
 2. **按扩展名分派**：`glTFLoading`、`InstancedSceneTest` 里 `.gltf/.glb` 走 tinygltf，`.fbx/.obj/.ply` 走 assimp；之后 `--scene Assets/benchmark/Bistro/.../BistroExterior.fbx` 可直接运行；
-3. **Bistro 基线**：预期"数千 draw + 百万三角形"会把 **CPU 提交**压满（现有 `glTFLoading` 是每图元一次 bind+draw），这正是 bindless / indirect draw 的对照基线；
+3. **Bistro 基线**：~~预期"数千 draw + 百万三角形"会把 **CPU 提交**压满~~（现有 `glTFLoading` 是每图元一次 bind+draw）——**2026-09-13 实测修正**：ORCA 的 FBX 只有 71–132 个 primitive，达不到这个量级，详见下面"验证 2"与"结论"；
 4. **DDS 贴图（后续"带宽版本"预设）**：离线用 `texconv`（microsoft/DirectXTex）批量转 PNG，或运行时集成 BCn 解码（如单头库 `bcdec`）；两者都独立于 §14.5 的几何 loader。
+
+**第二阶段已落地（2026-09-13，分支 `codex/assimp-loader`）**
+
+- 新增 `Geometry/AssimpModelLoader.h`：把 `aiScene` 映射到现有 `VulkanglTFModel`，`glTFLoading` 与 `InstancedSceneTest` 共用；
+- 导入 flag：`aiProcess_Triangulate | PreTransformVertices | GenSmoothNormals | FlipUVs | JoinIdenticalVertices`——节点层级烘进顶点，每个 `aiMesh` 对应一个单位矩阵 `Node`，引擎侧不复现 FBX 节点树；
+- 材质：`AI_MATKEY_BASE_COLOR` 优先、回落到 `AI_MATKEY_COLOR_DIFFUSE`；每个材质最多一张 base color 贴图；
+- 贴图：外部文件（png/jpg/jpeg/tga/bmp，相对路径按模型目录解析）与嵌入式贴图（`*<index>`：压缩字节走 `stbi_load_from_memory`，未压缩纹素拷成 RGBA）都支持；DDS/HDR 等跳过并计数；没有可用贴图的材质回落到 1×1 白色兜底（与 glTF 路径一致）；
+- 按扩展名分派：`.fbx/.obj/.ply` → assimp，`.gltf/.glb` → tinygltf（`glTFLoading` 与 `InstancedSceneTest` 两个入口都已改）；
+- `summary.csv` 新增 `draw_calls` 字段（每帧实际发出的 draw call 数），让"CPU 提交受限"这类结论能回指到原始数据。
+
+**踩到的真实坑（已修）**：`External/ktx/other_include/assimp/` 里带了一份**旧版 assimp 头文件**（没有 `aiTextureType_BASE_COLOR` 等 PBR 枚举），而 ktx 的 `PUBLIC` include 排在链接目标前面，于是 `#include <assimp/material.h>` 解析到旧头、编译报 C2065。修法：在 `target_include_directories(VulkanRenderer ...)` 里显式把 `${VULKAN_RENDERER_EXTERNAL_DIR}/assimp/include` 提前（本目标自己的 include 排在链接目标之前），并在 CMakeLists 里写明原因。
+
+**相机**：assimp 路径按**资产包围盒**推一个确定性固定机位（固定方位角、俯角 20°，距离由包围球与 FOV 推出）——这是 §14.1.1 相机策略的第一步；显式命名机位（`bistro_view_0/1/2`）与 `--camera-path` 仍未做。注意 `initialize_camera()` 在 `load_assets()` 之后执行，**取景必须写在 `initialize_camera()` 里**，否则会被默认值覆盖（第一版就踩了这个，靠运行中截屏才发现）。
+
+**验证 1：格式覆盖（RTX 5090 D，Debug 构建，1920×1061）**
+
+| 资产 | 结构（mesh/primitive/vertex/index/material/texture/skipped） | 结果 |
+| --- | --- | --- |
+| `External/assimp/test/models/FBX/box.fbx` | 1/1/24/36/1/0/0 | exit 0、零 VUID |
+| `External/assimp/test/models/OBJ/spider.obj`（含 jpg 贴图） | 4/4/946/4104/6/5/0 | exit 0、零 VUID、5 张贴图正常绑定 |
+| `External/assimp/test/models/PLY/cube_uv.ply` | 1/1/24/36/1/0/0 | exit 0、零 VUID |
+| `Assets/benchmark/Sponza/glTF/Sponza.gltf`（回归） | 走 tinygltf，结构不变 | exit 0、零 VUID |
+
+`FrameGraphTests` 129 checks / 0 failures；另外做了**目视确认**（运行中截屏，`out/verify/*.png` 不入库）：Bistro 外景整体入镜、spider.obj 的贴图与朝向正常。
+
+**验证 2：Bistro 几何基线（几何-only：622 个 DDS 全部按设计跳过 → 材质走 1×1 白色兜底）**
+
+命令：`--demo glTFLoading --scene Assets/benchmark/Bistro/Bistro_v5_2/<scene>.fbx --warmup 60 --frames 300 --csv out/benchmark/bistro-<tag>`（CSV 已留档；`gpu_clock,unlocked`）
+
+| 场景 | draw_calls | 顶点 / 索引 | CPU p50/p95/p99 (ms) | GPU p50/p95/p99 (ms) |
+| --- | --- | --- | --- | --- |
+| `BistroExterior.fbx` | 132 | 2,883,642 / 8,496,360（283 万三角形） | 1.411 / 2.986 / 3.790 | 0.137 / 0.418 / 2.177 |
+| `BistroInterior.fbx` | 71 | 813,359 / 3,139,827（105 万三角形） | 0.652 / 1.109 / 1.542 | 0.058 / 0.133 / 0.430 |
+| `BistroInterior_Wine.fbx` | 75 | 1,063,841 / 3,960,969（132 万三角形） | 0.727 / 2.226 / 4.013 | 0.083 / 0.828 / 1.992 |
+
+加载耗时（进程 wall clock 减去采样时间）：外景约 19 s，两个内景各约 7–8 s，主要花在 assimp 的 `PreTransformVertices + JoinIdenticalVertices`。
+
+**结论（修正上面第 3 条的预期）**
+
+1. "Bistro 是数千 draw"**不成立**：ORCA 的 FBX 本身只有 71–132 个 mesh，导入后就是 71–132 个 primitive；三个场景的 CPU p50 只有 0.65–1.41 ms（≈700–1500 FPS），**不足以当"提交压力"的对照基线**。
+2. 但目前仍是 **CPU-bound**（CPU p50 是 GPU p50 的 5–10 倍），说明"逐图元 bind + push constant + draw"的开销方向没错，只是量级不够——真正把 GPU 压满的仍然是 §14.1 的 `sponza_instanced_100k`（410 ms/frame，GPU-bound）。
+3. 要让 Bistro 变成真正的提交压力，需要先**把 draw call 数拉上去**（按材质/图元拆分、每图元多实例、或把内景做成多 pass 组合）；这件事和 GPU-driven（bindless + indirect 的收益点）一起做更合适，本轮不强行完成。
+4. 未锁频（`gpu_clock,unlocked`）：GPU 数字只用于同机相对比较，正式数字要在提权 shell 里跑 `scripts/lock-gpu-clocks.ps1 -Action lock`（§14.2）。
+5. DDS 贴图仍未接入（全部走白色兜底），"带宽预设"需要离线转 PNG 或运行时接 BCn 解码（下面第 4 条）。
+
+**脚本同步**：`scripts/fetch-benchmark-scenes.ps1` 的 Bistro 分支不再把"转 GLB"当成必需步骤——解压后可以直接 `--scene ...\BistroExterior.fbx`（assimp 运行时 loader），转换只保留给需要 GLB/tinygltf 路径的场景；脚本结尾也会把 `.fbx/.obj/.ply` 一起列出来。
+
+**第三阶段（下一步）**：把 draw call 数拉起来（按材质/图元拆分或每图元多实例）→ 得到真正的"提交压力"基线 → 再进 GPU-driven（bindless + indirect）做对照；DDS/BCn 与显式命名机位按需并行。
 
 **边界与风险**：assimp 对 FBX 的部分高级特性（NURBS、部分动画/约束）支持有限——本项目只做**静态几何**，不受影响；assimp 不负责贴图解码（DDS 问题依旧存在）；D 盘剩余空间有限（见 §14.1.1 的资产体积说明）。
 ## 15. NVIDIA Profile 采集清单（Nsight Graphics / Nsight Systems）
