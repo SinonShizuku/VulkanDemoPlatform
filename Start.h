@@ -165,6 +165,11 @@ inline auto& outstream = std::cout;//不是constexpr，因为std::cout具有外�
 inline std::string command_line_demo;
 inline std::string command_line_scene;
 
+// benchmark（main.cpp 解析）：--frames <N> 测 N 帧、--warmup <N> 预热、--csv <前缀> 输出路径
+inline int benchmark_frames = 0;
+inline int benchmark_warmup = 30;
+inline std::string benchmark_csv;
+
 // --scene 的解析规则：绝对路径直接用；否则先按 Assets/models/<name> 找，再按仓库根目录相对路径找，
 // 必要时补 .gltf 后缀；找不到时返回按 Assets/models 解析的结果，由调用方给出错误信息。
 inline std::filesystem::path resolve_scene_asset(const std::string& name) {

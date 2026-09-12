@@ -243,12 +243,18 @@ public:
             return result;
         }
         swapchain_create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-        if (!limit_frame_rate)
-            for (size_t i = 0; i < surface_present_mode_count; i++)
-                if (surface_present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                    swapchain_create_info.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                    break;
-                }
+        // benchmark 模式优先 IMMEDIATE（真正不锁帧；MAILBOX 在某些驱动/控制面板设置下仍会被 vsync 限制），
+        // 其次 MAILBOX；正常模式保持原来的行为。
+        const VkPresentModeKHR preferred_modes[] = { benchmark_frames > 0 ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR };
+        if (!limit_frame_rate || benchmark_frames > 0) {  // benchmark 时强制不锁帧
+            for (VkPresentModeKHR preferred : preferred_modes)
+                for (size_t i = 0; i < surface_present_mode_count; i++)
+                    if (surface_present_modes[i] == preferred) {
+                        swapchain_create_info.presentMode = preferred;
+                        i = surface_present_mode_count;
+                        break;
+                    }
+        }
 
         swapchain_create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         swapchain_create_info.flags = flags;

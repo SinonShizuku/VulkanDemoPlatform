@@ -203,6 +203,15 @@ public:
         auto& shared_resources = SharedResourceManager::get_singleton();
         bool show_demo_window = true;
 
+        // benchmark：去掉 vsync（否则测到的是刷新率上限），并准备 timestamp recorder。
+        BenchmarkRecorder benchmark;
+        const bool benchmarking = benchmark_frames > 0;
+        if (benchmarking) {
+            glfwSwapInterval(0);
+            benchmark.initialize(VulkanCore::get_singleton().get_vulkan_device().get_physical_device());
+        }
+        uint32_t benchmark_frame_index = 0;
+
         double last_frame_time = glfwGetTime();
         while (!glfwWindowShouldClose(window)) {
             while (glfwGetWindowAttrib(window, GLFW_ICONIFIED))
@@ -232,7 +241,9 @@ public:
                 shared_resources.get_semaphore_image_is_available()
             );
 
+            active_frame_benchmark = benchmarking ? &benchmark : nullptr;
             current_demo->render_frame();
+            active_frame_benchmark = nullptr;
 
             // render-finished semaphore 必须按 swapchain image 区分，否则会与 presentation
             // engine 仍在使用的信号量冲突（VUID-vkQueueSubmit-pSignalSemaphores-00067）。
@@ -253,6 +264,34 @@ public:
             update_fps_title(frame_timer);
 
             shared_resources.get_shared_fence().wait_and_reset();
+
+            if (benchmarking) {
+                const double gpu_ms = benchmark.resolve_gpu_ms();
+                if (benchmark_frame_index >= static_cast<uint32_t>(benchmark_warmup))
+                    benchmark.add_sample(frame_timer * 1000.0, gpu_ms);
+                ++benchmark_frame_index;
+                if (benchmark_frame_index >= static_cast<uint32_t>(benchmark_warmup + benchmark_frames)) {
+                    VkPhysicalDeviceProperties properties{};
+                    vkGetPhysicalDeviceProperties(VulkanCore::get_singleton().get_vulkan_device().get_physical_device(), &properties);
+                    const std::string base = benchmark_csv.empty() ? std::string("out/benchmark/latest") : benchmark_csv;
+                    if (!std::filesystem::path(base).parent_path().empty())
+                        std::filesystem::create_directories(std::filesystem::path(base).parent_path());
+                    const auto& extent = VulkanSwapchainManager::get_singleton().get_swapchain_create_info().imageExtent;
+                    std::vector<std::string> metadata = {
+                        std::string("demo,") + current_demo->get_type(),
+                        std::string("scene,") + (command_line_scene.empty() ? std::string("(default)") : command_line_scene),
+                        std::string("resolution,") + std::to_string(extent.width) + "x" + std::to_string(extent.height),
+                        std::string("gpu,") + properties.deviceName,
+                        std::string("driver,") + std::format("{}.{}.{}", VK_VERSION_MAJOR(properties.driverVersion), VK_VERSION_MINOR(properties.driverVersion), VK_VERSION_PATCH(properties.driverVersion)),
+                        std::string("vulkan_device,") + std::format("{}.{}.{}", VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion)),
+                        std::string("vsync,0"),
+                        std::string("warmup,") + std::to_string(benchmark_warmup),
+                    };
+                    benchmark.write_reports(base, metadata);
+                    benchmark.shutdown();
+                    glfwSetWindowShouldClose(window, true);
+                }
+            }
         }
     }
 

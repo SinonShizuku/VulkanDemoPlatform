@@ -2,6 +2,7 @@
 #include "../../Start.h"
 #include "../VulkanCore.h"
 #include "VulkanSync.h"
+#include "../Benchmark.h"
 
 class VulkanCommandBuffer {
     friend class VulkanCommandPool;
@@ -25,6 +26,8 @@ public:
         VkResult result = vkBeginCommandBuffer(handle, &begin_info);
         if (result)
             outstream << std::format("[ VulkanCommandBuffer ] ERROR\nFailed to begin a command buffer!\nError code: {}\n", int32_t(result));
+        else
+            benchmark_hook_begin(handle);  // benchmark 时在帧命令缓冲开头写 timestamp
         return result;
     }
 
@@ -36,10 +39,13 @@ public:
         VkResult result = vkBeginCommandBuffer(handle, &begin_info);
         if (result)
             outstream << std::format("[ VulkanCommandBuffer ] ERROR\nFailed to begin a command buffer!\nError code: {}\n", int32_t(result));
+        else
+            benchmark_hook_begin(handle);  // benchmark 时在帧命令缓冲开头写 timestamp
         return result;
     }
 
     result_t end() const {
+        benchmark_hook_end(handle);  // benchmark 时在帧命令缓冲结尾写 timestamp
         VkResult result = vkEndCommandBuffer(handle);
         if (result)
             outstream << std::format("[ VulkanCommandBuffer ] ERROR\nFailed to end a command buffer!\nError code: {}\n", int32_t(result));

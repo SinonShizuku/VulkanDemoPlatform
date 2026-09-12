@@ -1166,6 +1166,26 @@ pwsh scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径
 **冒烟验证（2026-09-12）**：`--demo glTFLoading --scene Assets/benchmark/Sponza/glTF/Sponza.gltf` → exit 0、零 VUID、无 leaked objects、stderr 为空、窗口标题 60 FPS（12 秒）。注意当前显示的是 `limitFrameRate` 下的上限值，**还不是可用的 benchmark 数字**——正式测量前要先去掉帧率上限，改用帧时间 / GPU timestamp 采样（§14.2）。
 
 `sponza_instanced_100k` 不需要新资产：在 `sponza` 基础上用代码生成 10 万实例布局（下一步 GPU-driven 阶段一起做）。
+**测量地基（2026-09-12 落地）**
+
+```text
+VulkanRenderer --demo <名称> [--scene <资产>] --frames <N> [--warmup <M>] [--csv <前缀>]
+示例：--demo glTFLoading --scene Assets/benchmark/Sponza/glTF/Sponza.gltf --warmup 30 --frames 400 --csv out/benchmark/sponza
+```
+
+- **不锁帧**：benchmark 模式下 swapchain 强制用 `VK_PRESENT_MODE_IMMEDIATE_KHR`（有则优先，其次 MAILBOX）。注意 GLFW 的 `glfwSwapInterval()` 对 Vulkan present 模式无效，之前测到的 60 FPS 是 `create_swapchain(limit_frame_rate=true)` 的 FIFO 上限；
+- **CPU**：主循环 `glfwGetTime()` 的逐帧耗时；
+- **GPU**：query pool 两个 timestamp（`TOP_OF_PIPE` / `BOTTOM_OF_PIPE`），由 `VulkanCommandBuffer::begin/end` 自动写入（因此不需要改任何 demo），fence 等待后 `vkGetQueryPoolResults` 读取；
+- **输出**：`<前缀>-frames.csv`（逐帧 cpu_ms/gpu_ms）+ `<前缀>-summary.csv`（metadata: demo / scene / resolution / GPU / driver / vulkan_device / vsync / warmup / frames + CPU 与 GPU 的 P50/P95/P99），同时打到 stdout。
+
+首次实测（RTX 5090 D，1920×1061，warmup 30）：
+
+| 场景 | CPU p50 / p95 / p99 (ms) | GPU p50 / p95 / p99 (ms) |
+| --- | --- | --- |
+| `glTFLoading` + Sponza | 0.666 / 0.934 / 1.479 | 0.031 / 0.073 / 0.183 |
+| `ShadowMapping`（2048² 阴影 + SAT） | 1.092 / 2.200 / 4.259 | 0.242 / 0.457 / 1.087 |
+
+**这两个 GPU 数字只用于相对比较，暂不能当结论**：绝对量级偏小（ShadowMapping 的 2048² 阴影 + SAT 链理论上不止 0.24 ms），需要先做三件事再采信：① 校验 graphics queue 的 `timestampValidBits`、确认帧内没有第二次 reset；② 加 **per-pass timestamp**，让各 pass 之和与整帧对上；③ 用重负载（后续的 10 万实例）确认数值随负载增长。CPU 侧的数字可以直接用（ShadowMapping 的 p99 4.26 ms 已经反映 SAT 提交的 CPU 开销）。
 ### 14.2 Benchmark 口径（与 §9 一致，硬约束）
 
 - 固定相机路径、分辨率、warmup 帧与采样帧数；
