@@ -250,6 +250,9 @@ endif()
 if(MSVC)
     set_target_properties(VulkanRenderer PROPERTIES
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # 源码是 UTF-8（含中文注释）。不指定编码时 MSVC 会按本地代码页（如 936）解析，
+    # 个别多字节序列会吞掉后续代码或触发 C4819，表现为莫名其妙的语法错误。
+    target_compile_options(VulkanRenderer PRIVATE /utf-8)
 endif()
 
 include(CTest)

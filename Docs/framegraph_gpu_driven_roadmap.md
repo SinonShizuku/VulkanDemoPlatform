@@ -81,7 +81,9 @@ out/build/windows-ninja-release
 
 ### 2.1.1 构建系统的一个坑（已修）
 
-本地化（代码页 936）的 MSVC 输出会让 CMake/Ninja 的 dyndep 解析不到头文件依赖，表现为「只改头文件不重编译」，从而验证到旧二进制甚至定位错问题。`scripts/build.ps1` 现在显式设置 `$env:VSLANG = "1033"`；用本地化前缀配置过的构建目录需要删除后重新配置才会生效。
+本地化（代码页 936）的 MSVC 输出会让 CMake/Ninja 的 dyndep 解析不到头文件依赖，表现为「只改头文件不重编译」，从而验证到旧二进制甚至定位错问题。`scripts/build.ps1` 现在显式设置 `$env:VSLANG = "1033"`；用本地化前缀配置过的构建目录需要删除后重新配置才会生效。
+
+另一个相关坑：应用 target 此前没有指定源码编码，MSVC 按本地代码页（936）解析 UTF-8 源码，个别多字节序列会“吞掉”后续代码（表现为莫名其妙的语法错误）并产生大量 `C4819`。现在 `VulkanRenderer` 也编译为 `/utf-8`（`FrameGraphCore` / 测试同样如此），构建 0 warning、中文注释不再影响语法。
 
 ### 2.2 WIP 与工作区状态
 
@@ -579,7 +581,7 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 - **swapchain 的所有权方案（已实现）**：给图加了「外部同步资源」语义——`import_texture(..., externally_synchronized=true)` 时图仍记录使用与依赖，但不为该资源生成 barrier；同时 `RenderTargetAttachment` 支持显式 `initial_layout`/`final_layout`。这样 swapchain image 的转换交回 render pass（`UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR`，与 legacy 屏幕 pass 一致），图只负责自己拥有的资源（例如深度）。
 - **glTF 迁移（已落地）**：颜色 = 导入的 swapchain image（外部同步），深度 = 图拥有的 transient 纹理（图规划并录制其布局转换），pass 主体用 `acquire_render_target()` 拿到的兼容 render pass/framebuffer 记录绘制。实跑 60 FPS、单元测试 18/123 全过。
 - **仍未过 validation 的部分**：`vkQueueSubmit(): performs a layout transition on presentable VkImage ... but the image has not been acquired`，与既有的 render-finished semaphore 跨 swapchain image 复用错误（§2.6 第 10 条）同时出现、高度相关。下一步应先修 swapchain 同步（每个 swapchain image 一个 render-finished semaphore，或引入 `VK_KHR_swapchain_maintenance1` + fence），再复验。
-- **ShadowMapping 迁移：尚未开始**（结构：shadow depth pass + SAT compute 系列 + 屏幕 pass；需要先让 executor 覆盖 compute/storage image 的用例，并复用上面的外部同步方案处理 swapchain）。
+- **ShadowMapping 迁移（本轮尝试的结论）**：已把**屏幕 pass** 接到图（图拥有 depth、颜色用外部同步的 swapchain、由 render pass 完成 `UNDEFINED -> COLOR -> PRESENT`），demo 能稳定运行；但 validation 报 `vkQueueSubmit(): performs a layout transition on presentable VkImage ... but the image has not been acquired from VkSwapchainKHR`——该错误在旧路径（RHI render pass + manager 自带 framebuffer）不出现，只在这条图路径出现，说明 acquire/present 的窗口记账与图路径还没对齐，因此**迁移已回退**（master 保持验证干净）。下一步：先梳理 `VulkanSwapchainManager::swap_image()` 与 `VulkanCommand::present_image()` 的 acquire 记账，或把 acquire/present 也做成图上的显式 pass；然后再迁 shadow depth / SAT compute（原计划：mage 的用例，并复用上面的外部同步方案处理 swapchain）。
 - BasicRendering 迁移进行中，且前置阻塞已定位：executor 的 render target 能力已就位；`glTFLoading` 的迁移尝试在真实运行中初始化失败，随后用**未修改的** `glTFLoading` 复测同样失败（进程退出码 `0xC0000409`，后台隐藏窗口运行偶尔能进入帧循环），说明这是**既有问题、与 FrameGraph 迁移无关**。迁移该 demo 之前需要先定位这个既有崩溃，因此本轮已回退 demo 改动、master 保持可用。
 - 下一步顺序：① 定位 `glTFLoading` 既有初始化失败；② 用 executor 迁移 glTF（图持有 depth、render target 由 executor 提供）；③ 迁移 `ShadowMapping`（阴影 pass + 手写 barrier + SAT compute 系列 + 屏幕 pass），需要先在 executor 上补 compute/storage image 支持。
 
