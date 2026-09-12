@@ -243,6 +243,17 @@ inline Usage depth_stencil_read() noexcept {
 }
 
 // 着色器读取（采样）：默认发生在片元着色器，需要时用 with_stages() 覆盖。
+// 深度图作为纹理采样（例如阴影贴图进片元着色器）：layout 用 DEPTH_STENCIL_READ_ONLY_OPTIMAL，
+// 访问是 SHADER_SAMPLED_READ（与 depth_stencil_read() 的 attachment 读取不同）。
+inline Usage depth_stencil_sampled_read() noexcept {
+    Usage usage;
+    usage.stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    usage.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    usage.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    usage.image_requirement = ImageUsage::Sampled;
+    return usage;
+}
+
 inline Usage sampled_read() noexcept {
     Usage usage;
     usage.stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;

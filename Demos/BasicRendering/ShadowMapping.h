@@ -68,225 +68,178 @@ public:
 
     void render_frame() override {
         update_uniform_data();
-        const auto& [render_pass_offscreen, framebuffers_offscreen] = VulkanPipelineManager::get_singleton().get_rpwf_offscreen_ds();
-        auto current_image_index = VulkanSwapchainManager::get_singleton().get_current_image_index();
+        const auto current_image_index = VulkanSwapchainManager::get_singleton().get_current_image_index();
+        const auto& swapchain_info = VulkanSwapchainManager::get_singleton().get_swapchain_create_info();
+        const auto shadow_map_size = VulkanPipelineManager::get_singleton().get_shadow_map_size();
+        const uint32_t W = shadow_map_size.width;
+        const uint32_t H = shadow_map_size.height;
+        const uint32_t blocksX = (W + sat_block_size - 1) / sat_block_size;
+        const uint32_t blocksY = (H + sat_block_size - 1) / sat_block_size;
 
-        VkClearValue clear_values[2] = {};
+        // ---------------------------------------------------------------- 构图
+        // 整帧一张图：Shadow(graphics) -> 6 个 SAT(compute) -> Scene(graphics)。
+        // 所有 shadow map / SAT 图像由图拥有，layout 与同步全部由图规划（不再手写 barrier）。
+        frame_graph_.reset();
+        frame_graph_.set_name("ShadowMapping");
+
+        framegraph::TextureDesc shadow_depth_desc;
+        shadow_depth_desc.name = "ShadowDepth";
+        shadow_depth_desc.format = VK_FORMAT_D16_UNORM;
+        shadow_depth_desc.extent = VkExtent3D{ W, H, 1 };
+        shadow_depth_desc.usage = framegraph::ImageUsage::DepthStencilAttachment | framegraph::ImageUsage::Sampled;
+        shadow_depth_ = frame_graph_.create_texture(shadow_depth_desc);
+
+        framegraph::TextureDesc shadow_vsm_desc;
+        shadow_vsm_desc.name = "ShadowVsm";
+        shadow_vsm_desc.format = VK_FORMAT_R32G32_SFLOAT;
+        shadow_vsm_desc.extent = shadow_depth_desc.extent;
+        shadow_vsm_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Storage | framegraph::ImageUsage::Sampled;
+        shadow_vsm_ = frame_graph_.create_texture(shadow_vsm_desc);
+
+        auto create_sat_texture = [this](const char* name, uint32_t width, uint32_t height) {
+            framegraph::TextureDesc desc;
+            desc.name = name;
+            desc.format = VK_FORMAT_R32G32_SFLOAT;
+            desc.extent = VkExtent3D{ width, height, 1 };
+            desc.usage = framegraph::ImageUsage::Storage | framegraph::ImageUsage::Sampled;
+            return frame_graph_.create_texture(desc);
+        };
+        sat_row_partial_ = create_sat_texture("SatRowPartial", W, H);
+        sat_sat_row_ = create_sat_texture("SatRow", W, H);
+        sat_col_partial_ = create_sat_texture("SatColPartial", W, H);
+        sat_final_ = create_sat_texture("SatFinal", W, H);
+        sat_row_block_sums_ = create_sat_texture("SatRowBlockSums", blocksX, H);
+        sat_row_block_prefix_ = create_sat_texture("SatRowBlockPrefix", blocksX, H);
+        sat_col_block_sums_ = create_sat_texture("SatColBlockSums", W, blocksY);
+        sat_col_block_prefix_ = create_sat_texture("SatColBlockPrefix", W, blocksY);
+
+        framegraph::TextureDesc scene_depth_desc;
+        scene_depth_desc.name = "SceneDepth";
+        scene_depth_desc.format = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
+        scene_depth_desc.extent = VkExtent3D{ swapchain_info.imageExtent.width, swapchain_info.imageExtent.height, 1 };
+        scene_depth_desc.usage = framegraph::ImageUsage::DepthStencilAttachment | framegraph::ImageUsage::Sampled;
+        scene_depth_ = frame_graph_.create_texture(scene_depth_desc);
+
+        framegraph::TextureDesc color_desc;
+        color_desc.name = "SwapchainImage";
+        color_desc.format = swapchain_info.imageFormat;
+        color_desc.extent = scene_depth_desc.extent;
+        color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
+        scene_color_ = frame_graph_.import_texture(
+            color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+            /*externally_synchronized=*/true);
+
+        frame_graph_.add_graphics_pass("Shadow")
+            .write(shadow_depth_, framegraph::usage::depth_stencil_write())
+            .write(shadow_vsm_, framegraph::usage::color_attachment_write())
+            .execute([this](framegraph::PassContext& context) { record_shadow_pass(context); });
+
+        frame_graph_.add_compute_pass("SatRowBlock")
+            .read(shadow_vsm_, framegraph::usage::storage_read())
+            .write(sat_row_partial_, framegraph::usage::storage_write())
+            .write(sat_row_block_sums_, framegraph::usage::storage_write())
+            .execute([this, blocksX, H](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_row_block, compute_descriptor_sets.row_block, blocksX, H, 1, context);
+            });
+        frame_graph_.add_compute_pass("SatRowScan")
+            .read(sat_row_block_sums_, framegraph::usage::storage_read())
+            .write(sat_row_block_prefix_, framegraph::usage::storage_write())
+            .execute([this, H](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_row_block_scan, compute_descriptor_sets.row_block_scan, 1, H, 1, context);
+            });
+        frame_graph_.add_compute_pass("SatRowAdd")
+            .read(sat_row_partial_, framegraph::usage::storage_read())
+            .read(sat_row_block_prefix_, framegraph::usage::storage_read())
+            .write(sat_sat_row_, framegraph::usage::storage_write())
+            .execute([this, blocksX, H](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_row_block_add, compute_descriptor_sets.row_block_add, blocksX, H, 1, context);
+            });
+        frame_graph_.add_compute_pass("SatColBlock")
+            .read(sat_sat_row_, framegraph::usage::storage_read())
+            .write(sat_col_partial_, framegraph::usage::storage_write())
+            .write(sat_col_block_sums_, framegraph::usage::storage_write())
+            .execute([this, W, blocksY](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_col_block, compute_descriptor_sets.col_block, W, blocksY, 1, context);
+            });
+        frame_graph_.add_compute_pass("SatColScan")
+            .read(sat_col_block_sums_, framegraph::usage::storage_read())
+            .write(sat_col_block_prefix_, framegraph::usage::storage_write())
+            .execute([this, W](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_col_block_scan, compute_descriptor_sets.col_block_scan, W, 1, 1, context);
+            });
+        frame_graph_.add_compute_pass("SatColAdd")
+            .read(sat_col_partial_, framegraph::usage::storage_read())
+            .read(sat_col_block_prefix_, framegraph::usage::storage_read())
+            .write(sat_final_, framegraph::usage::storage_write())
+            .execute([this, W, blocksY](framegraph::PassContext& context) {
+                record_sat_pass(compute_pipelines.sat_col_block_add, compute_descriptor_sets.col_block_add, W, blocksY, 1, context);
+            });
+
+        frame_graph_.add_graphics_pass("Scene")
+            .write(scene_color_, framegraph::usage::color_attachment_write())
+            .write(scene_depth_, framegraph::usage::depth_stencil_write())
+            .read(shadow_depth_, framegraph::usage::depth_stencil_sampled_read())
+            .read(sat_final_, framegraph::usage::sampled_read())
+            .execute([this](framegraph::PassContext& context) { record_scene_pass(context, scene_color_, scene_depth_); });
+
+        if (!frame_graph_.compile()) {
+            outstream << std::format("[ ShadowMapping ] compile 失败: {}\n", frame_graph_.get_error());
+            return;
+        }
+        executor_.import_texture(scene_color_,
+                                 VulkanSwapchainManager::get_singleton().get_swapchain_image(current_image_index),
+                                 VulkanSwapchainManager::get_singleton().get_swapchain_image_view(current_image_index));
+        executor_.set_synchronization2(
+            VulkanCore::get_singleton().get_vulkan_device().get_physical_device_vulkan13_features().synchronization2 == VK_TRUE);
+        if (!executor_.prepare(frame_graph_)) {
+            outstream << std::format("[ ShadowMapping ] prepare 失败: {}\n", executor_.get_error());
+            return;
+        }
+
+        // 图拥有的资源每帧都会重新创建/复用：descriptor 必须在 prepare() 之后用图提供的 view 重写。
+        VkDescriptorImageInfo shadow_depth_descriptor = {
+            *offscreen_depth_sampler,
+            executor_.image_view(shadow_depth_),
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+        };
+        descriptor_sets.scene.write(shadow_depth_descriptor, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, 0);
+        VkDescriptorImageInfo sat_final_descriptor = {
+            *sampler,
+            executor_.image_view(sat_final_),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        };
+        descriptor_sets.scene.write(sat_final_descriptor, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, 0);
+
+        auto write_storage = [this](const VulkanDescriptorSet& set, framegraph::ResourceHandle resource, uint32_t binding) {
+            VkDescriptorImageInfo info = { VK_NULL_HANDLE, executor_.image_view(resource), VK_IMAGE_LAYOUT_GENERAL };
+            set.write(info, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, binding, 0);
+        };
+        write_storage(compute_descriptor_sets.row_block, shadow_vsm_, 0);
+        write_storage(compute_descriptor_sets.row_block, sat_row_partial_, 1);
+        write_storage(compute_descriptor_sets.row_block, sat_row_block_sums_, 2);
+        write_storage(compute_descriptor_sets.row_block_scan, sat_row_block_sums_, 0);
+        write_storage(compute_descriptor_sets.row_block_scan, sat_row_block_prefix_, 1);
+        write_storage(compute_descriptor_sets.row_block_add, sat_row_partial_, 0);
+        write_storage(compute_descriptor_sets.row_block_add, sat_row_block_prefix_, 1);
+        write_storage(compute_descriptor_sets.row_block_add, sat_sat_row_, 2);
+        write_storage(compute_descriptor_sets.col_block, sat_sat_row_, 0);
+        write_storage(compute_descriptor_sets.col_block, sat_col_partial_, 1);
+        write_storage(compute_descriptor_sets.col_block, sat_col_block_sums_, 2);
+        write_storage(compute_descriptor_sets.col_block_scan, sat_col_block_sums_, 0);
+        write_storage(compute_descriptor_sets.col_block_scan, sat_col_block_prefix_, 1);
+        write_storage(compute_descriptor_sets.col_block_add, sat_col_partial_, 0);
+        write_storage(compute_descriptor_sets.col_block_add, sat_col_block_prefix_, 1);
+        write_storage(compute_descriptor_sets.col_block_add, sat_final_, 2);
 
         command_buffer.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
         {
-            // 离屏rpwf
-            auto shadow_map_size = VulkanPipelineManager::get_singleton().get_shadow_map_size();
-            clear_values[0].color = {{ 1.0f, 1.0f, 0.0f, 0.0f }};
-            clear_values[1].depthStencil = {1.f, 0};
-            render_pass_offscreen.cmd_begin(command_buffer, framebuffers_offscreen, {{}, shadow_map_size}, clear_values);
-            {
-                VkViewport viewport = {
-                    .width = static_cast<float>(shadow_map_size.width),
-                    .height = static_cast<float>(shadow_map_size.height),
-                    .minDepth = 0.f,
-                    .maxDepth = 1.f
-                };
-                vkCmdSetViewport(command_buffer,0,1,&viewport);
-                VkRect2D scissor = {
-                    .offset = {0,0},
-                    .extent = {shadow_map_size.width, shadow_map_size.height}
-                };
-                vkCmdSetScissor(command_buffer,0,1,&scissor);
-                vkCmdSetDepthBias(command_buffer,depth_bias_constant,0.f,depth_bias_slope);
-                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.offscreen);
-                vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_offscreen,0,1,descriptor_sets.offscreen.Address(),0, nullptr);
-                draw(demo_scene, pipeline_layout_offscreen);
-            }
-            render_pass_offscreen.cmd_end(command_buffer);
-
-            // SAT compute passes (row block -> row scan -> row add -> col block -> col scan -> col add)
-            const uint32_t W = shadow_map_size.width;
-            const uint32_t H = shadow_map_size.height;
-            const uint32_t blocksX = (W + sat_block_size - 1) / sat_block_size;
-            const uint32_t blocksY = (H + sat_block_size - 1) / sat_block_size;
-
-            VkImageSubresourceRange color_range = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1
-            };
-
-            auto cmd_barrier_image = [&](VkImage image,
-                                         VkAccessFlags src_access,
-                                         VkAccessFlags dst_access,
-                                         VkImageLayout old_layout,
-                                         VkImageLayout new_layout,
-                                         VkPipelineStageFlags src_stage,
-                                         VkPipelineStageFlags dst_stage) {
-                VkImageMemoryBarrier barrier = {
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .srcAccessMask = src_access,
-                    .dstAccessMask = dst_access,
-                    .oldLayout = old_layout,
-                    .newLayout = new_layout,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = image,
-                    .subresourceRange = color_range
-                };
-                vkCmdPipelineBarrier(
-                    command_buffer,
-                    src_stage,
-                    dst_stage,
-                    0,
-                    0, nullptr,
-                    0, nullptr,
-                    1, &barrier
-                );
-            };
-
-            auto cmd_barrier_color_to_compute = [&] {
-                cmd_barrier_image(
-                    VulkanPipelineManager::get_singleton().get_ca_offscreen_vsm().get_image(),
-                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                );
-            };
-
-            auto cmd_transition_undefined_to_general = [&](VkImage image) {
-                cmd_barrier_image(
-                    image,
-                    0,
-                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                );
-            };
-
-            auto cmd_barrier_compute_to_compute = [&](VkImage image) {
-                cmd_barrier_image(
-                    image,
-                    VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                );
-            };
-
-            auto cmd_barrier_compute_to_fragment = [&](VkImage image) {
-                cmd_barrier_image(
-                    image,
-                    VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-                );
-            };
-
-            cmd_transition_undefined_to_general(sat_images.row_partial.get_image());
-            cmd_transition_undefined_to_general(sat_images.sat_row.get_image());
-            cmd_transition_undefined_to_general(sat_images.col_partial.get_image());
-            cmd_transition_undefined_to_general(sat_images.sat_final.get_image());
-            cmd_transition_undefined_to_general(sat_images.row_block_sums.get_image());
-            cmd_transition_undefined_to_general(sat_images.row_block_prefix.get_image());
-            cmd_transition_undefined_to_general(sat_images.col_block_sums.get_image());
-            cmd_transition_undefined_to_general(sat_images.col_block_prefix.get_image());
-
-            cmd_barrier_color_to_compute();
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.row_block.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, blocksX, H, 1);
-            cmd_barrier_compute_to_compute(sat_images.row_partial.get_image());
-            cmd_barrier_compute_to_compute(sat_images.row_block_sums.get_image());
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block_scan);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.row_block_scan.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, 1, H, 1);
-            cmd_barrier_compute_to_compute(sat_images.row_block_prefix.get_image());
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_row_block_add);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.row_block_add.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, blocksX, H, 1);
-            cmd_barrier_compute_to_compute(sat_images.sat_row.get_image());
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.col_block.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, W, blocksY, 1);
-            cmd_barrier_compute_to_compute(sat_images.col_partial.get_image());
-            cmd_barrier_compute_to_compute(sat_images.col_block_sums.get_image());
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block_scan);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.col_block_scan.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, W, 1, 1);
-            cmd_barrier_compute_to_compute(sat_images.col_block_prefix.get_image());
-
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipelines.sat_col_block_add);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout,
-                0, 1, compute_descriptor_sets.col_block_add.Address(), 0, nullptr);
-            vkCmdDispatch(command_buffer, W, blocksY, 1);
-
-            cmd_barrier_compute_to_fragment(sat_images.sat_final.get_image());
-
-            // 屏幕 pass 接入 FrameGraph：颜色 = 导入的 swapchain image（layout 转换交给 render pass），
-            // 深度 = 图拥有的 transient 纹理。原先的 rpwf_ds 组合与它带来的隐式转换一并删除。
-            const auto& swapchain_info = VulkanSwapchainManager::get_singleton().get_swapchain_create_info();
-            frame_graph_.reset();
-            frame_graph_.set_name("ShadowMapping");
-
-            framegraph::TextureDesc color_desc;
-            color_desc.name = "SwapchainImage";
-            color_desc.format = swapchain_info.imageFormat;
-            color_desc.extent = VkExtent3D{ swapchain_info.imageExtent.width, swapchain_info.imageExtent.height, 1 };
-            color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
-            const framegraph::ResourceHandle color = frame_graph_.import_texture(
-                color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                /*externally_synchronized=*/true);
-
-            framegraph::TextureDesc depth_desc;
-            depth_desc.name = "Depth";
-            depth_desc.format = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
-            depth_desc.extent = color_desc.extent;
-            depth_desc.usage = framegraph::ImageUsage::DepthStencilAttachment | framegraph::ImageUsage::Sampled;
-            const framegraph::ResourceHandle depth = frame_graph_.create_texture(depth_desc);
-
-            frame_graph_.add_graphics_pass("Scene")
-                .write(color, framegraph::usage::color_attachment_write())
-                .write(depth, framegraph::usage::depth_stencil_write())
-                .execute([this, color, depth](framegraph::PassContext& context) {
-                    record_scene_pass(context, color, depth);
-                });
-
-            if (!frame_graph_.compile()) {
-                outstream << std::format("[ ShadowMapping ] compile 失败: {}\n", frame_graph_.get_error());
-                return;
-            }
-            executor_.import_texture(color,
-                                     VulkanSwapchainManager::get_singleton().get_swapchain_image(current_image_index),
-                                     VulkanSwapchainManager::get_singleton().get_swapchain_image_view(current_image_index));
-            executor_.set_synchronization2(
-                VulkanCore::get_singleton().get_vulkan_device().get_physical_device_vulkan13_features().synchronization2 == VK_TRUE);
-            if (!executor_.prepare(frame_graph_)) {
-                outstream << std::format("[ ShadowMapping ] prepare 失败: {}\n", executor_.get_error());
-                return;
-            }
             executor_.execute(frame_graph_, command_buffer);
 
-            // imgui rpwf
-            imgui_render(current_image_index,clear_values);
+            VkClearValue clear_values[2] = {
+                {.color = { 0.f, 0.f, 0.f, 1.f }},
+                {.depthStencil = { 1.f, 0 }}
+            };
+            imgui_render(current_image_index, clear_values);
         }
         command_buffer.end();
     }
@@ -308,6 +261,20 @@ private:
     // 屏幕 pass 已经接入 FrameGraph（图拥有 depth，颜色用外部同步的 swapchain image）
     framegraph::FrameGraph frame_graph_;
     framegraph::FrameGraphExecutor executor_;
+
+    // 每帧由图创建的资源句柄（图每帧重建，句柄随之更新）
+    framegraph::ResourceHandle scene_color_{};
+    framegraph::ResourceHandle scene_depth_{};
+    framegraph::ResourceHandle shadow_depth_{};
+    framegraph::ResourceHandle shadow_vsm_{};
+    framegraph::ResourceHandle sat_row_partial_{};
+    framegraph::ResourceHandle sat_sat_row_{};
+    framegraph::ResourceHandle sat_col_partial_{};
+    framegraph::ResourceHandle sat_final_{};
+    framegraph::ResourceHandle sat_row_block_sums_{};
+    framegraph::ResourceHandle sat_row_block_prefix_{};
+    framegraph::ResourceHandle sat_col_block_sums_{};
+    framegraph::ResourceHandle sat_col_block_prefix_{};
 
     int shadow_filter_mode = 0;
 
@@ -418,6 +385,74 @@ private:
     } sat_images;
     VulkanDescriptorSetLayout descriptor_set_layout_compute;
     VulkanDescriptorSetLayout descriptor_set_layout_offscreen;
+
+    // compute pass 的录制：直接绑管线 / 描述符并 dispatch，同步与 layout 全部由图规划。
+    void record_sat_pass(VkPipeline pipeline, const VulkanDescriptorSet& set, uint32_t x, uint32_t y, uint32_t z,
+                         framegraph::PassContext& context) {
+        auto* frame = static_cast<framegraph::FrameGraphExecution*>(context.user_data);
+        const VkCommandBuffer cmd = frame->command_buffer;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout, 0, 1,
+                                set.Address(), 0, nullptr);
+        vkCmdDispatch(cmd, x, y, z);
+    }
+
+    // 阴影 pass 的录制：render pass / framebuffer 由图提供（与 offscreen 管线兼容，需 2 条 subpass 依赖）。
+    void record_shadow_pass(framegraph::PassContext& context) {
+        auto* frame = static_cast<framegraph::FrameGraphExecution*>(context.user_data);
+        const VkCommandBuffer cmd = frame->command_buffer;
+        const auto shadow_map_size = VulkanPipelineManager::get_singleton().get_shadow_map_size();
+
+        const framegraph::RenderTargetAttachment attachments[2] = {
+            { .resource = shadow_vsm_,
+              .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_STORE },
+            { .resource = shadow_depth_,
+              .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+              .stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+              .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+              .depth_stencil = true },
+        };
+        const framegraph::RenderTarget* target = executor_.acquire_render_target(
+            frame_graph_, attachments, VulkanPipelineManager::get_singleton().get_offscreen_subpass_dependencies());
+        if (!target) {
+            outstream << std::format("[ ShadowMapping ] 获取 shadow render target 失败: {}\n", executor_.get_error());
+            return;
+        }
+
+        VkClearValue clear_values[2] = {
+            {.color = { 1.0f, 1.0f, 0.0f, 0.0f }},
+            {.depthStencil = { 1.f, 0 }}
+        };
+        VkRenderPassBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = target->render_pass;
+        begin_info.framebuffer = target->framebuffer;
+        begin_info.renderArea = VkRect2D{ {}, target->extent };
+        begin_info.clearValueCount = 2;
+        begin_info.pClearValues = clear_values;
+        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        {
+            VkViewport viewport = {
+                .width = static_cast<float>(shadow_map_size.width),
+                .height = static_cast<float>(shadow_map_size.height),
+                .minDepth = 0.f,
+                .maxDepth = 1.f
+            };
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            VkRect2D scissor = { .offset = {0, 0}, .extent = {shadow_map_size.width, shadow_map_size.height} };
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            vkCmdSetDepthBias(cmd, depth_bias_constant, 0.f, depth_bias_slope);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphic_pipelines.offscreen);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_offscreen, 0, 1,
+                                    descriptor_sets.offscreen.Address(), 0, nullptr);
+            draw(demo_scene, pipeline_layout_offscreen);
+        }
+        vkCmdEndRenderPass(cmd);
+    }
 
     // 屏幕 pass 的录制：render pass / framebuffer 由图（executor）提供。
     void record_scene_pass(framegraph::PassContext& context, framegraph::ResourceHandle color,
