@@ -1226,6 +1226,12 @@ pwsh scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径
 
 ORCA 包是 **FBX/OBJ**，引擎只读 glTF/GLB，所以脚本会：解包 → 找 `*.fbx/*.obj` → 若有 `assimp` 或 `blender` 就自动转 GLB（Blender 走 `--background --python` 一次性脚本），否则打印可直接照做的命令。转换后的 GLB 与原始资产都放在被忽略的 `Assets/benchmark/Bistro/`。
 
+**Bistro v5.2 实测内容（2026-09-12，`Assets/Bistro_v5_2.zip`，852.9 MB / 解压 1.6 GB）**：`BistroExterior.fbx`、`BistroInterior.fbx`、`BistroInterior_Wine.fbx` + **622 个 `.dds`** 贴图 + 11 `.tga` + 1 `.hdr`。因此要两步转换才能进引擎：
+
+1. **几何 FBX → GLB**：用 Blender（`blender --background --python` 一次性脚本）或 assimp；本机两者都**未安装**；建议 `winget install BlenderFoundation.Blender`（或自行安装 assimp）；
+2. **贴图 DDS → PNG/JPG**：引擎的贴图路径基于 stb_image，**不认 DDS**；可用 `texconv`（microsoft/DirectXTex 发布包，体积小）或 ImageMagick 批量转换。
+
+**建议的推进顺序**：先做**几何-only 的 Bistro（纯色材质）**拿到"数千 draw + 百万三角形"的 CPU/GPU 基线（这本来就是 bindless/indirect 要解决的场景，贴图对结论影响不大），贴图转换放到之后作为"带宽版本"再开一份预设。
 **相机路径：没有官方"benchmark 用"的推荐路径**。ORCA 包里有原版 Lumberyard demo 的相机动画数据（在 FBX/关卡里），但 Amazon / NVIDIA 并未发布统一的评测机位规范；各家（NVIDIA RTX demo、3DMark、vkmark 等）用的是**各自的固定 viewpoint**。因此本项目采用下面这条可复现策略：
 
 1. **默认固定机位**：每个场景定义 2–3 个固定 viewpoint（Bistro 计划 `bistro_view_0/1/2`，覆盖"远景大量小物件"与"近景高 LOD"两种负载）；固定机位的数字最可比，跨版本/跨机器都能对齐；
