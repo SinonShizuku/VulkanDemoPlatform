@@ -14,6 +14,10 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <gtc/packing.hpp>      // HDR → 16F 用 glm::packHalf2x16
+
+#include "../Interaction/DdsImage.h"
+
 #include "Model.h"
 
 // §14.5 第二阶段：把 FBX/OBJ/PLY 交给 assimp，再映射到引擎现有的 VulkanglTFModel 结构，
@@ -42,6 +46,9 @@ public:
         uint32_t material_count = 0;
         uint32_t texture_count = 0;
         uint32_t skipped_texture_count = 0;
+        // 按来源格式细分：DDS 走 BCn 解码、HDR 走浮点路径，日志/benchmark 里能核对数量。
+        uint32_t dds_texture_count = 0;
+        uint32_t hdr_texture_count = 0;
         // 世界空间包围盒（PreTransformVertices 之后顶点就是最终位置），调用方用它推导固定机位。
         glm::vec3 bounds_min = glm::vec3(0.0f);
         glm::vec3 bounds_max = glm::vec3(0.0f);
@@ -130,7 +137,7 @@ private:
 
     static bool is_supported_texture_extension(const std::string& extension) {
         return extension == ".png" || extension == ".jpg" || extension == ".jpeg"
-            || extension == ".tga" || extension == ".bmp";
+            || extension == ".tga" || extension == ".bmp" || extension == ".dds" || extension == ".hdr";
     }
 
     static std::filesystem::path resolve_texture_file(const std::filesystem::path& model_dir,
@@ -148,25 +155,102 @@ private:
         return relative;
     }
 
-    static bool create_texture_from_file(VulkanglTFModel::Image& image, const std::filesystem::path& file) {
+    static std::vector<uint8_t> read_file_bytes(const std::filesystem::path& file) {
+        std::ifstream stream(file, std::ios::binary | std::ios::ate);
+        if (!stream)
+            return {};
+        const std::streamsize size = stream.tellg();
+        if (size <= 0)
+            return {};
+        std::vector<uint8_t> bytes(static_cast<size_t>(size));
+        stream.seekg(0, std::ios::beg);
+        if (!stream.read(reinterpret_cast<char*>(bytes.data()), size))
+            return {};
+        return bytes;
+    }
+
+    // DDS：mip 0 解成 RGBA8，mip 链交给引擎自己生成（与 glTF/OBJ 路径一致）。
+    static bool create_texture_from_dds(VulkanglTFModel::Image& image, const std::filesystem::path& file, std::string& error) {
+        const std::vector<uint8_t> bytes = read_file_bytes(file);
+        if (bytes.empty()) {
+            error = "读不出文件";
+            return false;
+        }
+        std::vector<uint8_t> rgba;
+        uint32_t width = 0, height = 0;
+        std::string format;
+        if (!DdsImage::decode(bytes.data(), bytes.size(), rgba, width, height, format, error))
+            return false;
+        image.texture.create(rgba.data(), VkExtent2D{ width, height }, k_texture_format, k_texture_format, true);
+        return true;
+    }
+
+    // HDR（Radiance）：stb 解成 32F 线性像素，再压成 16F 上传。
+    // 为什么不用 Texture::load_file 的浮点路径：32F 在多数设备上不可线性过滤（采样与 mip 生成都会踩），
+    // 而 Texture::load_file 的调试检查只接受 4 字节浮点；16F 是 Vulkan 保证可过滤的格式，故这里自己解、自己压。
+    static bool create_texture_from_hdr(VulkanglTFModel::Image& image, const std::filesystem::path& file, std::string& error) {
+        int width = 0, height = 0, channels = 0;
+        float* pixels = stbi_loadf(file.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
+        if (pixels == nullptr || width <= 0 || height <= 0) {
+            error = "stb_image 解不出 HDR";
+            return false;
+        }
+        std::vector<uint16_t> halves(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+        for (size_t i = 0; i < halves.size(); i += 2) {
+            const uint32_t packed = glm::packHalf2x16(glm::vec2(pixels[i], pixels[i + 1]));
+            halves[i] = static_cast<uint16_t>(packed & 0xFFFFu);
+            halves[i + 1] = static_cast<uint16_t>(packed >> 16);
+        }
+        stbi_image_free(pixels);
+        const VkExtent2D extent{ static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
+        image.texture.create(reinterpret_cast<const uint8_t*>(halves.data()), extent,
+                             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+        return true;
+    }
+
+    static bool create_texture_from_stb_image(VulkanglTFModel::Image& image, const std::filesystem::path& file, std::string& error) {
         const VulkanFormatInfo format_info =
             VulkanCore::get_singleton().get_vulkan_device().get_format_info(k_texture_format);
         VkExtent2D extent{};
         std::unique_ptr<uint8_t[]> pixels = Texture::load_file(file.string().c_str(), extent, format_info);
-        if (!pixels || extent.width == 0 || extent.height == 0)
+        if (!pixels || extent.width == 0 || extent.height == 0) {
+            error = "stb_image 解不出该文件";
             return false;
+        }
         image.texture.create(pixels.get(), extent, k_texture_format, k_texture_format, true);
         return true;
     }
 
+    // 按扩展名分派：.dds 走 BCn 解码，.hdr 走浮点路径，其余交给 stb_image。
+    static bool create_texture_from_file(VulkanglTFModel::Image& image, const std::filesystem::path& file, std::string& error) {
+        const std::string extension = lowercase_extension(file);
+        if (extension == ".dds")
+            return create_texture_from_dds(image, file, error);
+        if (extension == ".hdr")
+            return create_texture_from_hdr(image, file, error);
+        return create_texture_from_stb_image(image, file, error);
+    }
+
     // 嵌入式贴图的"压缩"形态：pcData 是整段文件字节（png/jpg/...），mWidth 是字节数。
-    static bool create_texture_from_memory(VulkanglTFModel::Image& image, const uint8_t* data, size_t size) {
+    static bool create_texture_from_memory(VulkanglTFModel::Image& image, const uint8_t* data, size_t size, std::string& error) {
+        // 嵌入式 DDS 也走 BCn 解码（stb_image 不认 DDS）。
+        if (DdsImage::is_dds(data, size)) {
+            std::vector<uint8_t> rgba;
+            uint32_t width = 0, height = 0;
+            std::string format;
+            if (!DdsImage::decode(data, size, rgba, width, height, format, error))
+                return false;
+            image.texture.create(rgba.data(), VkExtent2D{ width, height }, k_texture_format, k_texture_format, true);
+            return true;
+        }
         const VulkanFormatInfo format_info =
             VulkanCore::get_singleton().get_vulkan_device().get_format_info(k_texture_format);
         VkExtent2D extent{};
         std::unique_ptr<uint8_t[]> pixels = Texture::load_file(data, size, extent, format_info);
-        if (!pixels || extent.width == 0 || extent.height == 0)
+        if (!pixels || extent.width == 0 || extent.height == 0) {
+            error = "stb_image 解不出该嵌入式贴图";
             return false;
+        }
         image.texture.create(pixels.get(), extent, k_texture_format, k_texture_format, true);
         return true;
     }
@@ -188,11 +272,11 @@ private:
         return true;
     }
 
-    static bool append_embedded_texture(VulkanglTFModel& model, const aiTexture& texture) {
+    static bool append_embedded_texture(VulkanglTFModel& model, const aiTexture& texture, std::string& error) {
         VulkanglTFModel::Image image;
         const bool compressed = texture.mHeight == 0;   // assimp 约定：mHeight == 0 时 mWidth 是字节数
         const bool created = compressed
-            ? create_texture_from_memory(image, reinterpret_cast<const uint8_t*>(texture.pcData), texture.mWidth)
+            ? create_texture_from_memory(image, reinterpret_cast<const uint8_t*>(texture.pcData), texture.mWidth, error)
             : create_texture_from_texels(image, texture);
         if (!created)
             return false;
@@ -223,10 +307,12 @@ private:
         return is_supported_texture_extension(lowercase_extension(extension));
     }
 
-    static bool append_embedded_texture_by_index(const aiScene& scene, uint32_t index, VulkanglTFModel& model) {
-        if (index >= scene.mNumTextures || scene.mTextures[index] == nullptr)
+    static bool append_embedded_texture_by_index(const aiScene& scene, uint32_t index, VulkanglTFModel& model, std::string& error) {
+        if (index >= scene.mNumTextures || scene.mTextures[index] == nullptr) {
+            error = "嵌入贴图索引越界";
             return false;
-        return append_embedded_texture(model, *scene.mTextures[index]);
+        }
+        return append_embedded_texture(model, *scene.mTextures[index], error);
     }
 
     // 每个材质最多一张 base color 贴图：成功就追加一个 Image/Texture 并指向它，
@@ -250,6 +336,8 @@ private:
 
             // 1) 嵌入式贴图："*<index>" 形式
             bool created = false;
+            std::string decode_error;
+            std::string extension_hint;    // 统计 dds/hdr 用（外部文件看扩展名，嵌入式看格式提示）
             if (texture_path.length > 0 && texture_path.data[0] == '*') {
                 const int index = std::atoi(texture_path.C_Str() + 1);
                 if (index < 0 || static_cast<uint32_t>(index) >= scene.mNumTextures) {
@@ -262,12 +350,14 @@ private:
                     warn(stats, options, std::format("跳过 {} 嵌入式贴图（材质 {}）", scene.mTextures[index]->achFormatHint, i));
                     continue;
                 }
-                created = append_embedded_texture_by_index(scene, static_cast<uint32_t>(index), model);
+                extension_hint = "." + lowercase_string(scene.mTextures[index]->achFormatHint);
+                created = append_embedded_texture_by_index(scene, static_cast<uint32_t>(index), model, decode_error);
             }
             else {
                 // 2) 外部文件：先看扩展名，再看文件在不在（不在就不要进 stb_image，避免刷错误日志）
                 const std::filesystem::path file = resolve_texture_file(model_dir, texture_path.C_Str());
                 const std::string extension = lowercase_extension(file);
+                extension_hint = extension;
                 if (!is_supported_texture_extension(extension)) {
                     ++stats.skipped_texture_count;
                     warn(stats, options, std::format("跳过 {} 贴图（材质 {}）：{}",
@@ -279,7 +369,7 @@ private:
                     // FBX 把媒体嵌进文件、但材质里保留原始文件名的情况：按文件名回落到嵌入贴图
                     const aiTexture* embedded = find_embedded_texture(scene, file);
                     if (embedded != nullptr && is_supported_embedded_format(*embedded)) {
-                        created = append_embedded_texture(model, *embedded);
+                        created = append_embedded_texture(model, *embedded, decode_error);
                     }
                     else {
                         ++stats.skipped_texture_count;
@@ -289,7 +379,7 @@ private:
                 }
                 else {
                     VulkanglTFModel::Image image;
-                    created = create_texture_from_file(image, file);
+                    created = create_texture_from_file(image, file, decode_error);
                     if (created)
                         model.images.push_back(std::move(image));
                 }
@@ -297,7 +387,8 @@ private:
 
             if (!created) {
                 ++stats.skipped_texture_count;
-                warn(stats, options, std::format("贴图解码失败（材质 {}）：{}", i, texture_path.C_Str()));
+                warn(stats, options, std::format("贴图解码失败（材质 {}）：{} {} {}", i, texture_path.C_Str(),
+                                                 extension_hint, decode_error));
                 continue;
             }
 
@@ -306,6 +397,10 @@ private:
             model.textures.push_back(texture);
             model.materials[i].base_color_texture_index = static_cast<uint32_t>(model.textures.size() - 1);
             ++stats.texture_count;
+            if (extension_hint == ".dds")
+                ++stats.dds_texture_count;
+            else if (extension_hint == ".hdr")
+                ++stats.hdr_texture_count;
         }
     }
 

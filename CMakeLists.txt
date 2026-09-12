@@ -73,6 +73,7 @@ set(_required_dependency_files
     "tinygltf/tiny_gltf.h"
     "tinygltf/json.hpp"
     "stb/stb_image.h"
+    "bcdec/bcdec.h"
     "ktx/include/ktx.h"
     "ktx/include/ktxvulkan.h"
     "ktx/lib/texture.c"
@@ -208,6 +209,8 @@ add_executable(VulkanRenderer
     Geometry/Vertex.h
     VulkanBase/components/VulkanDescriptor.h
     Interaction/Texture.h
+    Interaction/DdsImage.h
+    bcdec_implementation.cpp
     VulkanBase/VulkanContext.h
     VulkanBase/components/VulkanOperation.h
     stb_image_implementation.cpp
@@ -243,6 +246,7 @@ target_include_directories(VulkanRenderer
         ${VULKAN_RENDERER_EXTERNAL_DIR}/glm
         ${VULKAN_RENDERER_EXTERNAL_DIR}/tinygltf
         ${VULKAN_RENDERER_EXTERNAL_DIR}/stb
+        ${VULKAN_RENDERER_EXTERNAL_DIR}/bcdec
         ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
         # assimp 必须排在 ktx 之前：External/ktx/other_include 里带了一份旧版 assimp 头文件

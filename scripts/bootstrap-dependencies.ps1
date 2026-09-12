@@ -57,6 +57,16 @@ $dependencies = @(
         ArchiveRoot = "stb-2c980bb59875b0d32144a71867fbdebb2f77cd20"
         Marker      = "stb_image.h"
         CopyPaths   = @("stb_image.h", "stb_image_write.h")
+    },
+    # DDS（BCn 压缩贴图）解码：bcdec 是单头文件库（MIT 或 public domain，二选一），
+    # Bistro 的 622 张贴图是 DXT1/DXT5/ATI2，stb_image 不认，所以单独接一个解码器。
+    # 该仓库没有 tag，固定到 commit（与其它依赖一样进 External/，不入库）。
+    [pscustomobject]@{
+        Name        = "bcdec"
+        Uri         = "https://github.com/iOrange/bcdec/archive/80859ed3b7afb1c527a2a99d70c61457bea72d0c.zip"
+        ArchiveRoot = "bcdec-80859ed3b7afb1c527a2a99d70c61457bea72d0c"
+        Marker      = "bcdec.h"
+        CopyPaths   = @("bcdec.h", "LICENSE")
     }
 )
 

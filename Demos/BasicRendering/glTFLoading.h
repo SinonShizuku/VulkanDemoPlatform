@@ -441,9 +441,10 @@ private:
         loaded_scene_draw_calls = count_draw_calls();
 
         outstream << std::format(
-            "[ Model ] assimp: {} | mesh={} primitive={} vertex={} index={} material={} texture={} skipped_texture={}\n",
+            "[ Model ] assimp: {} | mesh={} primitive={} vertex={} index={} material={} texture={} dds={} hdr={} skipped_texture={}\n",
             filename.filename().string(), stats.mesh_count, stats.primitive_count, stats.vertex_count,
-            stats.index_count, stats.material_count, stats.texture_count, stats.skipped_texture_count);
+            stats.index_count, stats.material_count, stats.texture_count, stats.dds_texture_count,
+            stats.hdr_texture_count, stats.skipped_texture_count);
         for (const std::string& warning : stats.warnings)
             outstream << std::format("[ Model ] WARN {}\n", warning);
 
