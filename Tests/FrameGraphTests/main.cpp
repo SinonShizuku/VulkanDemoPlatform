@@ -394,6 +394,31 @@ TEST_CASE(reset_clears_graph) {
     CHECK(graph.get_name().empty());
 }
 
+TEST_CASE(compute_pass_storage_write_then_fragment_sample_plans_barriers) {
+    framegraph::FrameGraph graph;
+    framegraph::TextureDesc desc;
+    desc.name = "Visibility";
+    desc.format = VK_FORMAT_R32G32_UINT;
+    desc.extent = VkExtent3D{ 64, 64, 1 };
+    desc.usage = framegraph::ImageUsage::Storage | framegraph::ImageUsage::Sampled;
+    const framegraph::ResourceHandle visibility = graph.create_texture(desc);
+
+    graph.add_compute_pass("Cull")
+        .write(visibility, framegraph::usage::storage_write())
+        .execute([](framegraph::PassContext&) {});
+    graph.add_graphics_pass("Shade")
+        .read(visibility, framegraph::usage::sampled_read())
+        .execute([](framegraph::PassContext&) {});
+
+    CHECK(graph.compile());
+    const auto& barriers = graph.get_passes()[1].image_barriers;
+    CHECK(barriers.size() == 1);
+    CHECK(barriers[0].old_layout == VK_IMAGE_LAYOUT_GENERAL);
+    CHECK(barriers[0].new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    CHECK((barriers[0].src_stages & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+    CHECK((barriers[0].dst_stages & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) != 0);
+}
+
 int main() {
     return testh::Runner::instance().run();
 }

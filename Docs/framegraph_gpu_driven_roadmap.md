@@ -642,7 +642,7 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 
 验证（RTX 5090 D）：`ShadowMapping` 作为启动 demo（临时改动，仅用于验证）exit code 0、无 VUID、60 FPS；默认路径与 `FrameGraphTests`（123 checks / 0 failures）不受影响。
 
-仍留待下一轮：阴影贴图与 SAT compute 链仍在图外（`rpwf_offscreen_ds` + 手写 barrier）。迁进图需要先给 executor 补 **compute pass / dispatch 与 storage image** 支持，然后才能按 §10 P1 的目标「图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier」收尾。另有既有的 performance warning（offscreen 管线声明了 4 个顶点属性，而 offscreen 顶点着色器只消费 location 0），属于非 error 的既有项。
+仍留待下一轮：阴影贴图与 SAT compute 链仍在图外（`rpwf_offscreen_ds` + 手写 barrier）。**更正（2026-09-12）**：图与 executor 侧其实已经具备 compute 能力——`FrameGraph` 提供 `add_compute_pass()`，`usage::storage_read()/storage_write()` 产生 `COMPUTE_SHADER` stage + `GENERAL` layout 的规划，executor 按图顺序执行 pass 回调、barrier 也按通用路径录制（synchronization2 或旧路径）。本轮补了一个 device-free 单测 `compute_pass_storage_write_then_fragment_sample_plans_barriers`（storage 写入 → fragment 采样，断言 `GENERAL -> SHADER_READ_ONLY_OPTIMAL`、`COMPUTE_SHADER -> FRAGMENT_SHADER`），测试总数 129 checks / 0 failures。因此 SAT 迁移**不需要新增 executor 能力**，缺的是把 shadow map / SAT 图像改为图资源，并在每帧 `prepare()` 之后、`execute()` 之前用图提供的 view 重写相关 descriptor set。另有既有的 performance warning（offscreen 管线声明了 4 个顶点属性，而 offscreen 顶点着色器只消费 location 0），属于非 error 的既有项。
 
 
 ---
