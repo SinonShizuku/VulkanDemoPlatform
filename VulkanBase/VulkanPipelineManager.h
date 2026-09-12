@@ -373,6 +373,32 @@ public:
         rpwf_offscreen.framebuffer.clear();
     }
 
+    // offscreen 阴影 pass 的 subpass 依赖：与管线创建时使用的 RHI render pass 保持一致，
+    // FrameGraph executor 生成兼容 render pass 时需要复刻（dependencyCount 必须相同）。
+    [[nodiscard]] static std::span<const VkSubpassDependency> get_offscreen_subpass_dependencies() {
+        static const VkSubpassDependency dependencies[2] = {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+            },
+            {
+                .srcSubpass = 0,
+                .dstSubpass = VK_SUBPASS_EXTERNAL,
+                .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+            }
+        };
+        return dependencies;
+    }
+
     const auto& create_rpwf_offscreen_ds() {
         dsa_offscreen.create(
             VK_FORMAT_D16_UNORM,
@@ -433,34 +459,15 @@ public:
 
         };
 
-        VkSubpassDependency subpass_dependencies[2] = {
-            {
-                .srcSubpass = VK_SUBPASS_EXTERNAL,
-                .dstSubpass = 0,
-                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-            },
-            {
-                .srcSubpass = 0,
-                .dstSubpass = VK_SUBPASS_EXTERNAL,
-                .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-            }
-        };
+        const std::span<const VkSubpassDependency> subpass_dependencies = get_offscreen_subpass_dependencies();
 
         VkRenderPassCreateInfo render_pass_create_info = {
             .attachmentCount = 2,
             .pAttachments = attachment_description,
             .subpassCount = 1,
             .pSubpasses = &subpass_description,
-            .dependencyCount = 2,
-            .pDependencies = subpass_dependencies
+            .dependencyCount = static_cast<uint32_t>(subpass_dependencies.size()),
+            .pDependencies = subpass_dependencies.data()
         };
         rpwf_offscreen_ds.render_pass.create(render_pass_create_info);
 

@@ -657,7 +657,11 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 - **descriptor 重写**：`descriptor_sets.scene` 的 binding 1/2（两个 `COMBINED_IMAGE_SAMPLER`）与 compute 的 SAT bindings 必须在每帧 `prepare()` 之后、`execute()` 之前用图提供的 view 重写；`descriptor_sets.offscreen` 只绑 UBO，不需要改绑定；`descriptor_pool`（2 sets × 2 UBO + 2 combined sampler）可复用，不必重建；
 - **验收**：`ShadowMapping` 作为启动 demo（临时切换）validation 零错误 + 60 FPS + PCF/PCSS/VSSM 三种模式切换画面正常，然后还原默认 demo 并跑 `FrameGraphTests`。
 
-状态：本轮只完成接口确认与能力单测（§5.10 的 129 checks / 0 failures），**未改动 ShadowMapping 代码**；下一步按上面顺序实施。
+状态：接口确认与能力单测已完成（§5.10 的 129 checks / 0 failures）。实施过程中撞到两条结构性约束，已解决前者、并把后者写成下一轮的第一步：
+
+- **render pass 兼容性要求 dependencyCount 相同**：offscreen 阴影管线是针对 RHI 的 render pass 创建的（2 条 subpass 依赖），而 executor 生成的 render target 默认只复刻 1 条（屏幕 pass 用的那种），于是 `vkCmdDrawIndexed` 报 `dependencyCount is incompatible ... 1 != 2`。修复：`FrameGraphExecutor::acquire_render_target()` 新增可选参数 `std::span<const VkSubpassDependency> dependencies`（为空时保持原来的单条依赖），`VulkanPipelineManager` 暴露 `get_offscreen_subpass_dependencies()` 作为唯一来源。
+- **一个资源不能跨两个图**：只把「阴影 pass + 阴影贴图」搬进图（SAT 仍留在图外、继续手写 barrier）这条路走不通——SAT 的图像仍在图外被手写转换，而阴影贴图已经由图拥有，按帧复用的 layout 记账与手写 barrier 声明的 oldLayout 会不一致，validation 直接报 6 条 `VUID-VkImageMemoryBarrier-oldLayout-01197`，进程以 `0xC0000005` 退出（已回退，`master` 保持干净）。所以下一步必须**先把 `ShadowMapping::render_frame()` 重构成「每帧建一张图」**：Shadow（graphics）+ 6 个 SAT（compute）+ Scene（graphics）都在同一张图里，再统一 `compile()/prepare()/execute()`，然后才谈删手写 barrier。
+
 
 
 ---

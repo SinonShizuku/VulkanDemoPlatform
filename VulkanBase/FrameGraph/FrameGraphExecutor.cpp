@@ -346,7 +346,8 @@ bool FrameGraphExecutor::prepare(const FrameGraph& graph) {
 // ------------------------------------------------------------- render target
 
 const RenderTarget* FrameGraphExecutor::acquire_render_target(const FrameGraph& graph,
-                                                               std::span<const RenderTargetAttachment> attachments) {
+                                                               std::span<const RenderTargetAttachment> attachments,
+                                                               std::span<const VkSubpassDependency> dependencies) {
     std::vector<VkImageView> views;
     VkExtent2D extent{};
     int32_t depth_index = -1;
@@ -449,8 +450,8 @@ const RenderTarget* FrameGraphExecutor::acquire_render_target(const FrameGraph& 
     render_pass_info.pAttachments = descriptions.data();
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
-    render_pass_info.dependencyCount = 1;
-    render_pass_info.pDependencies = &dependency;
+    render_pass_info.dependencyCount = dependencies.empty() ? 1u : static_cast<uint32_t>(dependencies.size());
+    render_pass_info.pDependencies = dependencies.empty() ? &dependency : dependencies.data();
     if (entry->render_pass.create(render_pass_info) != VK_SUCCESS) {
         impl_->error = std::format("创建 render target 的 render pass 失败（附件数 {}）", descriptions.size());
         return nullptr;

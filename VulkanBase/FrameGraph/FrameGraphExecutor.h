@@ -97,8 +97,11 @@ public:
 
     // 用图资源（含导入资源）拼出兼容现有 VkRenderPass 管线的 render pass + framebuffer；
     // 附件 layout 固定为传入的 layout，同步来自图的 barrier。返回对象由 executor 持有。
+    // dependencies 为空时复刻 RHI 屏幕 pass 的那一条外部依赖；给出时按调用方要求复刻（render pass
+    // 兼容性要求 dependencyCount 与既有管线一致，例如 offscreen 阴影 pass 用的是两条）。
     [[nodiscard]] const RenderTarget* acquire_render_target(const FrameGraph& graph,
-                                                            std::span<const RenderTargetAttachment> attachments);
+                                                            std::span<const RenderTargetAttachment> attachments,
+                                                            std::span<const VkSubpassDependency> dependencies = {});
 
     [[nodiscard]] const std::string& get_error() const noexcept;
     [[nodiscard]] const Stats& get_stats() const noexcept;
