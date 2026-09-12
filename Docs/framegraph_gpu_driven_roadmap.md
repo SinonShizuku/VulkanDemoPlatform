@@ -1180,6 +1180,21 @@ VulkanRenderer --demo <名称> [--scene <资产>] --frames <N> [--warmup <M>] [-
 
 首次实测（RTX 5090 D，1920×1061，warmup 30，未锁频，vsync 关闭）。**注意：之前的表把 scene 写成 "(default)" 有歧义，且当时的 per-pass 数据其实是在 TeapotsAndPillars 上测的**；现在 `summary.csv` 增加了 `scene_asset` 字段记录真实加载的资产：
 
+**`sponza_instanced_100k` 基线（2026-09-12，分支 `codex/instanced-baseline`）**
+
+命令：`--demo InstancedScene --warmup 15 --frames 40 --csv out/benchmark/instanced-100k`
+
+| 指标 | 值 |
+| --- | --- |
+| 资产 | `Assets/benchmark/Sponza/glTF/Sponza.gltf`（取该资产 index 数最少的图元做实例源） |
+| 实例数 | 100000（`--instances` 可调） |
+| CPU p50 / p95 / p99 | 410.19 / 417.53 / 426.49 ms |
+| GPU p50 / p95 / p99 | 407.95 / 415.41 / 425.32 ms |
+| per-pass GPU p50 | Scene 409.30 ms、Present 0.021 ms |
+| validation | 零 VUID、无 leaked objects、stderr 空 |
+| 状态 | 2.5 FPS，CPU≈GPU → **GPU-bound**（对比 Sponza 场景 GPU 仅 0.028 ms，说明这个预设终于把 GPU 压满了） |
+
+注意：当前实现是「**取一个图元实例化成网格**」，不是 Sponza 的建筑布局，也**不采样贴图**（着色器只做 N·L），所以画面不该被当成 Sponza 参考图；它的定位是**可调规模的合成负载**。若要"看起来像 Sponza"，见 §14.1.1 的相机策略与后续的实例源/材质改进计划。**已知改进项**：实例源改用体量最大/最可辨识的图元、间距按包围盒计算、加 base color 贴图、校正绕序（当前用 `CULL_MODE_BACK` + CCW）。
 | 命令 | CPU p50 (ms) | GPU p50 (ms) | per-pass GPU p50 (ms) |
 | --- | --- | --- | --- |
 | `--demo ShadowMapping`（默认资产 TeapotsAndPillars.gltf） | 0.977 | 0.2018 | Shadow 0.0099 / SAT 链 0.1702 / Scene 0.0133 / Present 0.0080 |
