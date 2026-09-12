@@ -576,7 +576,10 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 - queue family ownership transfer、transient 内存复用、冗余 barrier 消除仍未实现；
 - **更正（2026-09-12）**：先前记录的「`glTFLoading` 既有崩溃」结论有误。真实根因是 `GraphicsPipelineCreateInfoPack` 的 `lineWidth` 默认 0，本机 validation layer 把这条 VUID 升级为 `vkCreateGraphicsPipelines` 失败（别的机器只告警），导致 `create_pipeline()` 失败、demo 初始化中止。已在共享 helper 里把默认值改成 1.0，并验证未修改的 glTF demo 可正常跑帧、默认 demo 不受影响。
 - **执行器修复**：`acquire_render_target()` 生成的 render pass 现在复刻 RHI render pass 的外部 subpass 依赖，否则管线与 render pass 不兼容（`dependencyCount 0 != 1`）。
-- **迁移剩余阻塞**：把 glTF 的渲染接进图之后，swapchain image 在 `vkQueuePresentKHR` 时仍是 `COLOR_ATTACHMENT_OPTIMAL`（图的 Present 转换与 ImGui pass 的边界未理顺），因此 glTF 迁移已回退，master 只保留上面的已验证修复；下一步先解决 swapchain/ImGui 的所有权与 layout 边界。
+- **swapchain 的所有权方案（已实现）**：给图加了「外部同步资源」语义——`import_texture(..., externally_synchronized=true)` 时图仍记录使用与依赖，但不为该资源生成 barrier；同时 `RenderTargetAttachment` 支持显式 `initial_layout`/`final_layout`。这样 swapchain image 的转换交回 render pass（`UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR`，与 legacy 屏幕 pass 一致），图只负责自己拥有的资源（例如深度）。
+- **glTF 迁移（已落地）**：颜色 = 导入的 swapchain image（外部同步），深度 = 图拥有的 transient 纹理（图规划并录制其布局转换），pass 主体用 `acquire_render_target()` 拿到的兼容 render pass/framebuffer 记录绘制。实跑 60 FPS、单元测试 18/123 全过。
+- **仍未过 validation 的部分**：`vkQueueSubmit(): performs a layout transition on presentable VkImage ... but the image has not been acquired`，与既有的 render-finished semaphore 跨 swapchain image 复用错误（§2.6 第 10 条）同时出现、高度相关。下一步应先修 swapchain 同步（每个 swapchain image 一个 render-finished semaphore，或引入 `VK_KHR_swapchain_maintenance1` + fence），再复验。
+- **ShadowMapping 迁移：尚未开始**（结构：shadow depth pass + SAT compute 系列 + 屏幕 pass；需要先让 executor 覆盖 compute/storage image 的用例，并复用上面的外部同步方案处理 swapchain）。
 - BasicRendering 迁移进行中，且前置阻塞已定位：executor 的 render target 能力已就位；`glTFLoading` 的迁移尝试在真实运行中初始化失败，随后用**未修改的** `glTFLoading` 复测同样失败（进程退出码 `0xC0000409`，后台隐藏窗口运行偶尔能进入帧循环），说明这是**既有问题、与 FrameGraph 迁移无关**。迁移该 demo 之前需要先定位这个既有崩溃，因此本轮已回退 demo 改动、master 保持可用。
 - 下一步顺序：① 定位 `glTFLoading` 既有初始化失败；② 用 executor 迁移 glTF（图持有 depth、render target 由 executor 提供）；③ 迁移 `ShadowMapping`（阴影 pass + 手写 barrier + SAT compute 系列 + 屏幕 pass），需要先在 executor 上补 compute/storage image 支持。
 

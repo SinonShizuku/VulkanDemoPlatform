@@ -103,6 +103,17 @@ bool plan_barriers(std::span<const uint32_t> execution_order,
             const ResourceInfo& info = resources[use.resource.index];
             ResourceState& state = states[use.resource.index];
 
+            // layout 与同步由外部负责（例如 swapchain image 交给 RHI render pass）：
+            // 只更新状态，不生成 barrier。
+            if (info.externally_synchronized) {
+                state.used = true;
+                state.layout = use.layout;
+                state.stages = use.stages;
+                state.access = use.access;
+                state.last_write = use.write;
+                continue;
+            }
+
             if (info.kind == ResourceKind::Buffer) {
                 if (!state.used) {
                     // buffer 没有 layout，首次使用不需要 barrier

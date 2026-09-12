@@ -129,8 +129,9 @@ ResourceHandle FrameGraph::create_buffer(const BufferDesc& desc) {
 ResourceHandle FrameGraph::import_texture(const TextureDesc& desc,
                                           VkImageLayout initial_layout,
                                           VkPipelineStageFlags2 initial_stages,
-                                          VkAccessFlags2 initial_access) {
-    return register_texture(desc, true, initial_layout, initial_stages, initial_access);
+                                          VkAccessFlags2 initial_access,
+                                          bool externally_synchronized) {
+    return register_texture(desc, true, initial_layout, initial_stages, initial_access, externally_synchronized);
 }
 
 ResourceHandle FrameGraph::import_buffer(const BufferDesc& desc) {
@@ -141,7 +142,8 @@ ResourceHandle FrameGraph::register_texture(const TextureDesc& desc,
                                             bool imported,
                                             VkImageLayout initial_layout,
                                             VkPipelineStageFlags2 initial_stages,
-                                            VkAccessFlags2 initial_access) {
+                                            VkAccessFlags2 initial_access,
+                                            bool externally_synchronized) {
     if (!declaration_valid_) {
         return {};
     }
@@ -172,6 +174,7 @@ ResourceHandle FrameGraph::register_texture(const TextureDesc& desc,
     info.initial_layout = initial_layout;
     info.initial_stages = initial_stages;
     info.initial_access = initial_access;
+    info.externally_synchronized = externally_synchronized;
 
     if (has_resource_named(info.name)) {
         fail(std::format("资源名 '{}' 重复", info.name));

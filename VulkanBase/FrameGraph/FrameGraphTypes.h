@@ -427,6 +427,9 @@ struct ResourceInfo {
     std::string name;
     ResourceKind kind = ResourceKind::None;
     bool imported = false;
+    // true 表示该资源的 layout 转换与同步由外部负责（例如 swapchain image 交给
+    // RHI 的 render pass 处理）：图仍记录它的使用与依赖，但不为它生成 barrier。
+    bool externally_synchronized = false;
     TextureDesc texture;
     BufferDesc buffer;
     // 导入资源进入图之前的同步状态；transient 资源固定为 UNDEFINED / NONE / 0

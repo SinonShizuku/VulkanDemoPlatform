@@ -35,7 +35,10 @@ struct FrameGraphExecution {
 // 这样 render pass 内部不会再发生隐式 layout 转换，转换全部来自图的 barrier。
 struct RenderTargetAttachment {
     ResourceHandle resource;
+    // subpass 内使用的 layout；initial_layout / final_layout 为 MAX_ENUM 时沿用 layout。
     VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkImageLayout initial_layout = VK_IMAGE_LAYOUT_MAX_ENUM;
+    VkImageLayout final_layout = VK_IMAGE_LAYOUT_MAX_ENUM;
     VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
     VkAttachmentStoreOp store_op = VK_ATTACHMENT_STORE_OP_STORE;
     VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;

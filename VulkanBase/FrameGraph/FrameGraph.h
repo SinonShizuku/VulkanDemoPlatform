@@ -58,7 +58,8 @@ public:
     ResourceHandle import_texture(const TextureDesc& desc,
                                   VkImageLayout initial_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                                   VkPipelineStageFlags2 initial_stages = VK_PIPELINE_STAGE_2_NONE,
-                                  VkAccessFlags2 initial_access = VK_ACCESS_2_NONE);
+                                  VkAccessFlags2 initial_access = VK_ACCESS_2_NONE,
+                                  bool externally_synchronized = false);
     ResourceHandle import_buffer(const BufferDesc& desc);
 
     // ------------------------------------------------------------ pass 声明
@@ -97,7 +98,8 @@ private:
                                     bool imported,
                                     VkImageLayout initial_layout,
                                     VkPipelineStageFlags2 initial_stages,
-                                    VkAccessFlags2 initial_access);
+                                    VkAccessFlags2 initial_access,
+                                    bool externally_synchronized = false);
     ResourceHandle register_buffer(const BufferDesc& desc, bool imported);
     PassBuilder add_pass(std::string_view name, PassKind kind);
     [[nodiscard]] bool has_resource_named(std::string_view name) const;

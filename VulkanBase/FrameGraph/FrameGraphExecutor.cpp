@@ -393,8 +393,14 @@ const RenderTarget* FrameGraphExecutor::acquire_render_target(const FrameGraph& 
         description.stencilLoadOp = attachments[index].stencil_load_op;
         description.stencilStoreOp = attachments[index].stencil_store_op;
         // 固定 layout：pass 内部不做转换，转换由图负责
-        description.initialLayout = attachments[index].layout;
-        description.finalLayout = attachments[index].layout;
+        // 默认把 attachment 钉在 subpass 使用的 layout 上（转换由图负责）；也可显式指定，
+        // 例如 swapchain image 交给 render pass 做 UNDEFINED -> COLOR -> PRESENT。
+        description.initialLayout = attachments[index].initial_layout == VK_IMAGE_LAYOUT_MAX_ENUM
+                                        ? attachments[index].layout
+                                        : attachments[index].initial_layout;
+        description.finalLayout = attachments[index].final_layout == VK_IMAGE_LAYOUT_MAX_ENUM
+                                      ? attachments[index].layout
+                                      : attachments[index].final_layout;
         descriptions.push_back(description);
 
         if (attachments[index].depth_stencil) {

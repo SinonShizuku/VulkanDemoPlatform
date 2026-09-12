@@ -6,6 +6,8 @@
 #include "../../VulkanBase/components/VulkanTexture.h"
 #include "../../VulkanBase/components/VulkanSampler.h"
 #include "../../VulkanBase/components/VulkanMemory.h"
+#include "../../VulkanBase/FrameGraph/FrameGraph.h"
+#include "../../VulkanBase/FrameGraph/FrameGraphExecutor.h"
 
 class glTFLoading : public DemoBase3D {
 public:
@@ -30,10 +32,13 @@ public:
             return false;
         }
 
+        executor_.set_synchronization2(
+            VulkanCore::get_singleton().get_vulkan_device().get_physical_device_vulkan13_features().synchronization2 == VK_TRUE);
         return true;
     }
 
     void cleanup_scene_resources() override {
+        executor_.reset();
         // SharedResourceManager::get_singleton().get_shared_fence().wait_and_reset();
         // 清理资源
         descriptor_set.reset();
@@ -54,28 +59,56 @@ public:
     void render_frame() override {
         update_uniform_data();
         uniform_buffer->transfer_data(uniform_data);
-        const auto& [render_pass, framebuffers] = VulkanPipelineManager::get_singleton().get_rpwf_ds();
-        auto current_image_index = VulkanSwapchainManager::get_singleton().get_current_image_index();
+        const uint32_t current_image_index = VulkanSwapchainManager::get_singleton().get_current_image_index();
+        const auto& swapchain_info = VulkanSwapchainManager::get_singleton().get_swapchain_create_info();
 
-        VkClearValue clear_values[2] = {
-            {.color = { 1.f, 1.f, 1.f, 1.f }},
-            {.depthStencil = { 1.f, 0 }}
-        };
+        // 颜色 = 导入的 swapchain image（layout/同步交给 render pass，图不为它生成 barrier）；
+        // 深度 = 图拥有的 transient 纹理（图的 barrier 负责它的 layout）。
+        frame_graph_.reset();
+        frame_graph_.set_name("glTFLoading");
+
+        framegraph::TextureDesc color_desc;
+        color_desc.name = "SwapchainImage";
+        color_desc.format = swapchain_info.imageFormat;
+        color_desc.extent = VkExtent3D{ swapchain_info.imageExtent.width, swapchain_info.imageExtent.height, 1 };
+        color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
+        const framegraph::ResourceHandle color = frame_graph_.import_texture(
+            color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+            /*externally_synchronized=*/true);
+
+        framegraph::TextureDesc depth_desc;
+        depth_desc.name = "Depth";
+        depth_desc.format = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
+        depth_desc.extent = VkExtent3D{ swapchain_info.imageExtent.width, swapchain_info.imageExtent.height, 1 };
+        depth_desc.usage = framegraph::ImageUsage::DepthStencilAttachment | framegraph::ImageUsage::Sampled;
+        const framegraph::ResourceHandle depth = frame_graph_.create_texture(depth_desc);
+
+        frame_graph_.add_graphics_pass("Scene")
+            .write(color, framegraph::usage::color_attachment_write())
+            .write(depth, framegraph::usage::depth_stencil_write())
+            .execute([this, color, depth](framegraph::PassContext& context) { record_scene_pass(context, color, depth); });
+
+        if (!frame_graph_.compile()) {
+            outstream << std::format("[ glTFLoading ] compile 失败: {}\n", frame_graph_.get_error());
+            return;
+        }
+        executor_.import_texture(color,
+                                 VulkanSwapchainManager::get_singleton().get_swapchain_image(current_image_index),
+                                 VulkanSwapchainManager::get_singleton().get_swapchain_image_view(current_image_index));
+        if (!executor_.prepare(frame_graph_)) {
+            outstream << std::format("[ glTFLoading ] prepare 失败: {}\n", executor_.get_error());
+            return;
+        }
 
         command_buffer.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
         {
-            // 屏幕部分rpwf
-            render_pass.cmd_begin(command_buffer, framebuffers[current_image_index],
-                                       {{}, window_size}, clear_values);
-            {
-                vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
-                vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_set->Address(),0, nullptr);
-                draw(gltf_model);
-            }
-            render_pass.cmd_end(command_buffer);
+            executor_.execute(frame_graph_, command_buffer);
 
-            // imgui rpwf
-            imgui_render(current_image_index,clear_values);
+            VkClearValue clear_values[2] = {
+                {.color = { 1.f, 1.f, 1.f, 1.f }},
+                {.depthStencil = { 1.f, 0 }}
+            };
+            imgui_render(current_image_index, clear_values);
         }
         command_buffer.end();
     }
@@ -83,6 +116,9 @@ public:
 
 
 private:
+    framegraph::FrameGraph frame_graph_;
+    framegraph::FrameGraphExecutor executor_;
+
     bool wireframe = false;
     std::unique_ptr<VulkanSampler> sampler;
     std::unique_ptr<VulkanDescriptorPool> descriptor_pool;
@@ -257,6 +293,53 @@ private:
         for (auto& child : node->children) {
             draw_node(model, child);
         }
+    }
+
+    // pass 主体：executor 提供与现有管线兼容的 render pass/framebuffer。
+    // 颜色附件由 render pass 完成 UNDEFINED -> COLOR_ATTACHMENT -> PRESENT；
+    // 深度附件由图规划并录制 barrier。
+    void record_scene_pass(framegraph::PassContext& context, framegraph::ResourceHandle color, framegraph::ResourceHandle depth) {
+        auto* frame = static_cast<framegraph::FrameGraphExecution*>(context.user_data);
+        VkCommandBuffer cmd = frame->command_buffer;
+
+        const framegraph::RenderTargetAttachment attachments[2] = {
+            { .resource = color,
+              .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+              .initial_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+              .final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_STORE },
+            { .resource = depth,
+              .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+              .stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+              .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+              .depth_stencil = true },
+        };
+        const framegraph::RenderTarget* target = executor_.acquire_render_target(frame_graph_, attachments);
+        if (!target) {
+            outstream << std::format("[ glTFLoading ] 获取 render target 失败: {}\n", executor_.get_error());
+            return;
+        }
+
+        VkClearValue clear_values[2] = {
+            {.color = { 1.f, 1.f, 1.f, 1.f }},
+            {.depthStencil = { 1.f, 0 }}
+        };
+        VkRenderPassBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = target->render_pass;
+        begin_info.framebuffer = target->framebuffer;
+        begin_info.renderArea = VkRect2D{ {}, target->extent };
+        begin_info.clearValueCount = 2;
+        begin_info.pClearValues = clear_values;
+
+        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, descriptor_set->Address(), 0, nullptr);
+        draw(gltf_model);
+        vkCmdEndRenderPass(cmd);
     }
 
     void draw(VulkanglTFModel &model) {
