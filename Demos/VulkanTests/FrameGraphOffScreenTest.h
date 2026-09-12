@@ -199,8 +199,8 @@ private:
 
     // 离屏 line pipeline：dynamic rendering（pNext = VkPipelineRenderingCreateInfo）
     bool create_pipeline_offscreen() {
-        VulkanShaderModule vert_offscreen(get_shader_path("VulkanTests/Line.vert.spv").string().c_str());
-        VulkanShaderModule frag_offscreen(get_shader_path("VulkanTests/Line.frag.spv").string().c_str());
+        static VulkanShaderModule vert_offscreen(get_shader_path("VulkanTests/Line.vert.spv").string().c_str());
+        static VulkanShaderModule frag_offscreen(get_shader_path("VulkanTests/Line.frag.spv").string().c_str());
         VkPipelineShaderStageCreateInfo shader_stages[2] = {
             vert_offscreen.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_offscreen.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -227,8 +227,8 @@ private:
     }
 
     bool create_pipeline() {
-        VulkanShaderModule vert(get_shader_path("VulkanTests/CanvasToScreen.vert.spv").string().c_str());
-        VulkanShaderModule frag(get_shader_path("VulkanTests/CanvasToScreen.frag.spv").string().c_str());
+        static VulkanShaderModule vert(get_shader_path("VulkanTests/CanvasToScreen.vert.spv").string().c_str());
+        static VulkanShaderModule frag(get_shader_path("VulkanTests/CanvasToScreen.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stages[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)

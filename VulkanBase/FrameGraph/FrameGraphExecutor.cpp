@@ -132,6 +132,18 @@ struct FrameGraphExecutor::Impl {
         return std::format("{}|{}|{}", desc.name, static_cast<uint64_t>(desc.size), static_cast<uint32_t>(desc.usage));
     }
 
+    // 按资源句柄覆盖 / 插入导入绑定（见 import_texture 的说明）。
+    template <typename T>
+    static void set_imported(std::vector<std::pair<uint32_t, T>>& table, uint32_t index, T value) {
+        const auto found = std::find_if(table.begin(), table.end(),
+            [index](const auto& entry) { return entry.first == index; });
+        if (found != table.end()) {
+            found->second = value;
+            return;
+        }
+        table.emplace_back(index, value);
+    }
+
     [[nodiscard]] VkImage find_imported_image(uint32_t index) const noexcept {
         const auto found = std::find_if(imported_textures.begin(), imported_textures.end(),
             [index](const auto& entry) { return entry.first == index; });
@@ -175,13 +187,16 @@ void FrameGraphExecutor::set_synchronization2(bool enabled) noexcept {
     impl_->synchronization2 = enabled;
 }
 
+// 同一资源句柄每帧都会重新导入（swapchain image 每帧是不同的一张），因此这里覆盖旧绑定而不是追加：
+// 追加会让 find_imported_* 命中第一帧的旧句柄——渲染永远写到同一张 swapchain image 上
+//（validation 报「presentable image 未 acquire」），而且导入表会无限增长。
 void FrameGraphExecutor::import_texture(ResourceHandle handle, VkImage image, VkImageView view) {
-    impl_->imported_textures.emplace_back(handle.index, image);
-    impl_->imported_views.emplace_back(handle.index, view);
+    impl_->set_imported(impl_->imported_textures, handle.index, image);
+    impl_->set_imported(impl_->imported_views, handle.index, view);
 }
 
 void FrameGraphExecutor::import_buffer(ResourceHandle handle, VkBuffer buffer) {
-    impl_->imported_buffers.emplace_back(handle.index, buffer);
+    impl_->set_imported(impl_->imported_buffers, handle.index, buffer);
 }
 
 void FrameGraphExecutor::reset() {

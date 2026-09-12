@@ -141,8 +141,8 @@ private:
         // VulkanShaderModule vert("Shader/Into3D.vert.spv");
         // VulkanShaderModule frag("Shader/Into3d_visualizeDepth.frag.spv");
         f_compile_glsl_to_spv f_compile;
-        VulkanShaderModule vert = create_shader_module_from_glsl(f_compile, get_shader_path("VulkanTests/Into3D.vert.shader").string().c_str());
-        VulkanShaderModule frag = create_shader_module_from_glsl(f_compile, get_shader_path("VulkanTests/Into3D.frag.shader").string().c_str());;
+        static VulkanShaderModule vert = create_shader_module_from_glsl(f_compile, get_shader_path("VulkanTests/Into3D.vert.shader").string().c_str());
+        static VulkanShaderModule frag = create_shader_module_from_glsl(f_compile, get_shader_path("VulkanTests/Into3D.frag.shader").string().c_str());;
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)

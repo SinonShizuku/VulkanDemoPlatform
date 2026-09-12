@@ -166,8 +166,8 @@ private:
     }
 
     bool create_pipeline() {
-        VulkanShaderModule vert(get_shader_path("BasicRendering/gltfLoading/gltfLoading.vert.spv").string().c_str());
-        VulkanShaderModule frag(get_shader_path("BasicRendering/gltfLoading/gltfLoading.frag.spv").string().c_str());
+        static VulkanShaderModule vert(get_shader_path("BasicRendering/gltfLoading/gltfLoading.vert.spv").string().c_str());
+        static VulkanShaderModule frag(get_shader_path("BasicRendering/gltfLoading/gltfLoading.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)

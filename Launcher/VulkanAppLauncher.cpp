@@ -206,6 +206,8 @@ void VulkanAppLauncher::main_loop() {
 }
 
 void VulkanAppLauncher::cleanup() {
+    // demo 里函数内 static 的 shader module 生命周期到进程结束，必须在销毁设备前统一释放。
+    VulkanShaderModule::release_all();
     VulkanPipelineManager::get_singleton().clear_all_rpwf();
     VulkanSwapchainManager::get_singleton().destroy_singleton();
     VulkanCore::get_singleton().destroy_singleton();
@@ -278,13 +280,13 @@ void VulkanAppLauncher::create_pipeline_layout_with_texture() {
 }
 
 void VulkanAppLauncher::create_pipeline() {
-    VulkanShaderModule vert("Shader/Texture.vert.spv");
-    VulkanShaderModule frag("Shader/Texture.frag.spv");
+    static VulkanShaderModule vert("Shader/Texture.vert.spv");
+    static VulkanShaderModule frag("Shader/Texture.frag.spv");
     // static VkPipelineShaderStageCreateInfo shader_stage_create_infos_triangle[2] = {
     //     vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
     //     frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
     // };
-    VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
+    static VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
         vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
         frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
     };

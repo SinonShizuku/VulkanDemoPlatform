@@ -23,7 +23,7 @@ FrameGraph v1 核心已落地（device-free，可单元测试）：
 - BasicRendering 迁移中：`glTFLoading` 已接入图（颜色=外部同步的 swapchain image，深度=图拥有的 transient 纹理），实跑 60 FPS；ShadowMapping / Deferred 尚未接入。
 - 第一份图驱动 Demo `FrameGraphOffScreenTest`：离屏画布的创建与两次 layout 转换完全由图生成，实跑 60 FPS，validation 没有新增错误；
 - 已知问题：该 Demo 复用 legacy `CanvasToScreen` 合成通道后画面为空白，尚未定位；swapchain image / ImGui pass 仍未纳入图；
-- 退出路径与验证可信化（2026-09-12）：修复了退出时的 `vkDestroyXxx: Invalid device` 崩溃（`0xC0000409`）、demo 悬垂的 swapchain 回调、ImGui render pass 的非法 `LOAD`+`UNDEFINED` 组合、ImGui descriptor pool 缺 `FREE_DESCRIPTOR_SET_BIT`、以及 57 个 leaked objects；默认路径（`BuffersAndPictureTest`）连跑 5 次 exit code 0、stdout 无任何 VUID、stderr 为空，`glTFLoading` 也能在非菜单路径下正常初始化了（详见 `Docs/framegraph_gpu_driven_roadmap.md` §5.8）。
+- 退出路径与验证可信化（2026-09-12）：修复了退出时的 `vkDestroyXxx: Invalid device` 崩溃（`0xC0000409`）、demo 悬垂的 swapchain 回调、ImGui render pass 的非法 `LOAD`+`UNDEFINED` 组合、ImGui descriptor pool 缺 `FREE_DESCRIPTOR_SET_BIT`、以及 57 个 leaked objects；默认路径（`BuffersAndPictureTest`）连跑 5 次 exit code 0、stdout 无任何 VUID、stderr 为空；`glTFLoading` 既能在非菜单路径下正常初始化，其图路径（含连续 4 次窗口 resize 触发 swapchain 重建）也已 validation 归零（详见 `Docs/framegraph_gpu_driven_roadmap.md` §5.8、§5.9）。
 
 尚未实现，不能对外陈述为已完成：
 

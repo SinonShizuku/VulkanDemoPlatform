@@ -233,14 +233,14 @@ private:
     }
 
     bool create_pipeline() {
-        VulkanShaderModule vert_gbuffer(get_shader_path("VulkanTests/GBuffer.vert.spv").string().c_str());
-        VulkanShaderModule frag_gbuffer(get_shader_path("VulkanTests/GBuffer.frag.spv").string().c_str());
+        static VulkanShaderModule vert_gbuffer(get_shader_path("VulkanTests/GBuffer.vert.spv").string().c_str());
+        static VulkanShaderModule frag_gbuffer(get_shader_path("VulkanTests/GBuffer.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_gbuffer[2] = {
             vert_gbuffer.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_gbuffer.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
         };
-        VulkanShaderModule vert_composition(get_shader_path("VulkanTests/Composition.vert.spv").string().c_str());
-        VulkanShaderModule frag_composition(get_shader_path("VulkanTests/Composition.frag.spv").string().c_str());
+        static VulkanShaderModule vert_composition(get_shader_path("VulkanTests/Composition.vert.spv").string().c_str());
+        static VulkanShaderModule frag_composition(get_shader_path("VulkanTests/Composition.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_composition[2] = {
             vert_composition.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_composition.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)

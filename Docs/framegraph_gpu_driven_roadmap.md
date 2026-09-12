@@ -594,7 +594,7 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 已修复（均实跑验证）：
 
 - **Ninja 头文件依赖失效**：`msvc_deps_prefix` 是乱码，Ninja 记录不到任何头文件依赖（`#deps 0`），改 `.h` 不重编译；已在 `CMakeLists.txt` 配置期自行探测真实前缀并覆盖（详见 §2.1.1）。
-- **退出崩溃（`0xC0000409`，崩溃点就在 validation 层内）**：根因是一条生命周期链——`VulkanAppLauncher::cleanup()` 先销毁 `VkDevice`，而 demo、ImGui、共享同步对象、`VulkanPipelineManager` 的附件都晚于设备析构，析构里调用 `vkDestroy*` 时设备句柄已被置空。修复：① `terminate_window()` 按 demo → ImGui → 共享资源 → rpwf/swapchain → device 的顺序显式释放；② `DestroyHandleBy` 在设备句柄为空时只清句柄、不再调用 Vulkan；③ `VulkanRenderPass` / `VulkanFramebuffer` 补上真正的析构（此前为空析构，`vector::clear()` 会漏掉 framebuffer）；④ demo 的 shader module 不再是函数内 `static`（进程级生命周期的设备子对象必然晚于设备析构）。
+- **退出崩溃（`0xC0000409`，崩溃点就在 validation 层内）**：根因是一条生命周期链——`VulkanAppLauncher::cleanup()` 先销毁 `VkDevice`，而 demo、ImGui、共享同步对象、`VulkanPipelineManager` 的附件都晚于设备析构，析构里调用 `vkDestroy*` 时设备句柄已被置空。修复：① `terminate_window()` 按 demo → ImGui → 共享资源 → rpwf/swapchain → device 的顺序显式释放；② `DestroyHandleBy` 在设备句柄为空时只清句柄、不再调用 Vulkan；③ `VulkanRenderPass` / `VulkanFramebuffer` 补上真正的析构（此前为空析构，`vector::clear()` 会漏掉 framebuffer）；④ demo 里进程级 `static` 的 shader module 改由 `VulkanShaderModule::release_all()` 在设备销毁前统一释放（§5.9 修正了这里早先「改成非 static」的做法）。
 - **demo 的 swapchain 回调悬垂**：demo 注册的回调捕获 `this`，demo 销毁后回调仍留在 `VulkanSwapchainManager` 中，退出或重建 swapchain 时会访问已释放的 demo（实测：在 `~VulkanPipeline()` 里读到 debug 堆填充值 `0xdddddddddddddddd` 并据此调用 `vkDestroyPipeline`）。现在回调带 owner，`~DemoBase()` 统一注销。
 - **ImGui render pass 非法组合**：`LOAD` + `initialLayout = UNDEFINED`（VUID-VkAttachmentDescription-format-06699）改为 `PRESENT_SRC_KHR`——ImGui 通道总是紧跟在把同一张 swapchain 图像写成 `PRESENT_SRC_KHR` 的屏幕通道之后。
 - **ImGui descriptor pool 缺 flag**：`ImGui_ImplVulkan_Shutdown()` 会 `vkFreeDescriptorSets()`，池必须带 `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`（VUID-vkFreeDescriptorSets-descriptorPool-00312）。
@@ -609,8 +609,29 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 
 仍未解决（下一步）：
 
-- **图路径的 acquire/present 记账**：把 `glTFLoading` 作为启动 demo 后 validation 稳定复现两类错误——`performs a layout transition on presentable VkImage ... but the image has not been acquired`，以及 `command buffer expects VkImage ... PRESENT_SRC_KHR, current layout is UNDEFINED`。这与 §5.7 记录的「ShadowMapping 迁移回退」是同一根因：图路径把 swapchain image 当外部同步资源交给 render pass 转换，但 acquire/present 的窗口记账尚未对齐。下一步应把 acquire/present 做成图上的显式 pass（或在 executor 里统一记账），再继续 ShadowMapping / Deferred 迁移。
+- ~~图路径的 acquire/present 记账~~：已在 §5.9 定位并修复（`FrameGraphExecutor` 的导入表只追加不覆盖，导致渲染永远写回第一帧的 swapchain image）；`glTFLoading` 图路径与 resize 现在都通过 validation。
 - 除默认 demo 外，其余 demo（ShadowMapping / Deferred / 其余 VulkanTests）本轮未逐个做 validation 验收。
+
+
+---
+
+### 5.9 图路径的 acquire/present 记账与 resize 稳定性（2026-09-12）
+
+§5.8 之后唯一挡住图路径验证的，是 `glTFLoading` 作为启动 demo 时稳定复现的两条 validation 错误：`performs a layout transition on presentable VkImage ... but the image has not been acquired`，以及 `command buffer ... expects VkImage ... PRESENT_SRC_KHR, current layout is UNDEFINED`。本轮定位并修复：
+
+- **executor 的导入表只追加、不覆盖**：`FrameGraphExecutor::import_texture()` 每帧 `emplace_back`，而 `find_imported_*()` 返回**第一个**匹配项。图每帧重建、句柄每帧重新分配，于是渲染永远写回第一帧导入的那张 swapchain image：该图像本帧没有 acquire（第一条错误），而本帧真正 acquire 到的图像从未被转换过，ImGui 通道按 `PRESENT_SRC_KHR` 去 load 它时仍是 `UNDEFINED`（第二条错误）。修复：导入按资源句柄覆盖（`Impl::set_imported`），顺带消掉导入表每帧增长两行的泄漏。
+- **resize 崩溃（`0xC0000005`）**：把 demo 的 shader module 改成函数内非 static（§5.8 的做法）之后，各 demo 里既有的 `static VkPipelineShaderStageCreateInfo[]`（在 `create_pipeline()` 首次调用时捕获 module 句柄，并被 swapchain 重建回调复用）指向了已销毁的 module，重建 swapchain 时直接崩。现在的做法：**保留** demo 里 static shader module 的原有生命周期，改为在 `VulkanShaderModule` 内部登记实例，由 `VulkanShaderModule::release_all()` 在 `VulkanAppLauncher::cleanup()` 中（销毁设备之前）统一释放——既不会出现「晚于设备析构」的 invalid device，也不会在 `vkDestroyDevice` 报 leaked objects。
+
+验证（2026-09-12，RTX 5090 D）：
+
+- `glTFLoading` 作为启动 demo（临时改动，仅用于验证）：exit code 0、validation 无任何输出、60 FPS；
+- 同一配置下用 Win32 `SetWindowPos` 连续改 4 次窗口尺寸（触发多次 swapchain / render target 重建）：exit code 0、无 VUID、无 leaked objects、stderr 为空（修复前为 `0xC0000005` 崩溃）；
+- 默认路径 `BuffersAndPictureTest`：正常退出与连续 resize 同样 exit code 0 + 零 VUID；
+- `FrameGraphTests.exe`：123 checks / 0 failures。
+
+结论：§5.7 记录的「ShadowMapping 迁移回退」前置阻塞（图路径与 acquire/present 记账未对齐）已经解除，可以继续 §13 第 6 项。
+
+小遗留：`VulkanSwapchainManager::recreate_swapchain()` 里仍有一行调试输出 `outstream << get_swapchain_image_views().size();`（resize 时会在 stdout 打出裸数字），待清理。
 
 
 ---
@@ -1051,7 +1072,7 @@ CSV / JSON 至少包含：
 2. ~~决定 WIP 的归档策略~~：构建期着色器编译改动已归档到 `codex/build-shader-pipeline`（`554efb5`）；
 3. ~~开始 FrameGraph v1~~：图编译、依赖、生命周期、barrier 规划与单元测试已完成（见 §5.6）；
 4. ~~实现 FrameGraph executor~~：已完成（真实资源分配、barrier 录制、pass 执行、render target 生成）；已接入 `FrameGraphOffScreenTest` 与 `glTFLoading`；
-~~修 swapchain 同步~~：每张 swapchain image 一个 render-finished semaphore、`SUBOPTIMAL` 视为本帧可用、ImGui render pass 非法 initialLayout 组合均已在 `codex/validation-cleanup` 修掉，默认路径 validation 已归零（见 §5.8）；**剩余**：图路径的 acquire/present 记账（把 acquire/present 做成图上的显式 pass）；
+~~修 swapchain 同步~~（已完成）：每张 swapchain image 一个 render-finished semaphore、`SUBOPTIMAL` 视为本帧可用、ImGui render pass 非法 initialLayout、以及图路径的 acquire/present 记账（executor 导入表未覆盖，见 §5.9）均已修复；默认路径与 `glTFLoading` 图路径的 validation 都已归零，resize 连续 4 次也干净；
 6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；——前置条件已就绪：退出路径不再崩溃、默认路径 validation 归零、demo 回调与设备子对象生命周期已修正；
 7. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
 8. 再加入 GPU-driven；
