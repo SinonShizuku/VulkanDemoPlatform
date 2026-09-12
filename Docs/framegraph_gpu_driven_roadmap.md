@@ -636,6 +636,17 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 
 ---
 
+### 5.10 ShadowMapping 屏幕 pass 接入 FrameGraph（2026-09-12）
+
+§13 第 6 项的**第一步**：把 ShadowMapping 的屏幕 pass 接进图——颜色 = 导入的 swapchain image（外部同步，layout 转换交给 render pass），深度 = 图拥有的 transient 纹理；同时删掉 `rpwf_ds` 的组合与它带来的隐式 layout 转换。scene 的 pipeline 是针对 RHI render pass 创建的，executor 生成的 render pass 复刻了相同附件格式与 subpass 依赖，因此保持兼容（§5.7 记录的那次回退正是被 §5.9 的导入表 bug 挡住的）。
+
+验证（RTX 5090 D）：`ShadowMapping` 作为启动 demo（临时改动，仅用于验证）exit code 0、无 VUID、60 FPS；默认路径与 `FrameGraphTests`（123 checks / 0 failures）不受影响。
+
+仍留待下一轮：阴影贴图与 SAT compute 链仍在图外（`rpwf_offscreen_ds` + 手写 barrier）。迁进图需要先给 executor 补 **compute pass / dispatch 与 storage image** 支持，然后才能按 §10 P1 的目标「图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier」收尾。另有既有的 performance warning（offscreen 管线声明了 4 个顶点属性，而 offscreen 顶点着色器只消费 location 0），属于非 error 的既有项。
+
+
+---
+
 ## 6. Synchronization 与 FrameContext 设计
 
 ### 6.1 当前模式
@@ -1073,7 +1084,7 @@ CSV / JSON 至少包含：
 3. ~~开始 FrameGraph v1~~：图编译、依赖、生命周期、barrier 规划与单元测试已完成（见 §5.6）；
 4. ~~实现 FrameGraph executor~~：已完成（真实资源分配、barrier 录制、pass 执行、render target 生成）；已接入 `FrameGraphOffScreenTest` 与 `glTFLoading`；
 ~~修 swapchain 同步~~（已完成）：每张 swapchain image 一个 render-finished semaphore、`SUBOPTIMAL` 视为本帧可用、ImGui render pass 非法 initialLayout、以及图路径的 acquire/present 记账（executor 导入表未覆盖，见 §5.9）均已修复；默认路径与 `glTFLoading` 图路径的 validation 都已归零，resize 连续 4 次也干净；
-6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；——前置条件已就绪：退出路径不再崩溃、默认路径 validation 归零、demo 回调与设备子对象生命周期已修正；
+6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；——**屏幕 pass 已完成（§5.10）**；剩余：给 executor 补 compute/dispatch + storage image 支持，再把 shadow map 与 SAT 链搬进图；Deferred 同批处理；
 7. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
 8. 再加入 GPU-driven；
 9. 最后在 RTX 机器上加入光追；

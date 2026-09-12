@@ -6,6 +6,8 @@
 #include "../../VulkanBase/components/VulkanTexture.h"
 #include "../../VulkanBase/components/VulkanSampler.h"
 #include "../../VulkanBase/components/VulkanMemory.h"
+#include "../../VulkanBase/FrameGraph/FrameGraph.h"
+#include "../../VulkanBase/FrameGraph/FrameGraphExecutor.h"
 
 
 class ShadowMapping : public DemoBase3D {
@@ -39,6 +41,7 @@ public:
     }
 
     void cleanup_scene_resources() override {
+        executor_.reset();
         // SharedResourceManager::get_singleton().get_shared_fence().wait_and_reset();
         // 清理资源
         descriptor_sets.~VulkanDescriptorSets();
@@ -65,7 +68,6 @@ public:
 
     void render_frame() override {
         update_uniform_data();
-        const auto& [render_pass, framebuffers] = VulkanPipelineManager::get_singleton().get_rpwf_ds();
         const auto& [render_pass_offscreen, framebuffers_offscreen] = VulkanPipelineManager::get_singleton().get_rpwf_offscreen_ds();
         auto current_image_index = VulkanSwapchainManager::get_singleton().get_current_image_index();
 
@@ -239,42 +241,49 @@ public:
 
             cmd_barrier_compute_to_fragment(sat_images.sat_final.get_image());
 
-            // 屏幕部分rpwf
-            clear_values[0].color = {{0.f,0.f,0.f,1.f}};
-            clear_values[1].depthStencil = {1.f, 0};
-            render_pass.cmd_begin(command_buffer, framebuffers[current_image_index],
-                                       {{}, window_size}, clear_values);
-            {
-                VkViewport viewport = {
-                    .width = static_cast<float>(window_size.width),
-                    .height = static_cast<float>(window_size.height),
-                    .minDepth = 0.f,
-                    .maxDepth = 1.f
-                };
-                vkCmdSetViewport(command_buffer,0,1,&viewport);
-                VkRect2D scissor = {
-                    .offset = {0,0},
-                    .extent = {window_size.width, window_size.height}
-                };
-                vkCmdSetScissor(command_buffer,0,1,&scissor);
-                switch (shadow_filter_mode) {
-                    case 0:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow);
-                        break;
-                    case 1:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_PCF);
-                        break;
-                    case 2:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_PCSS);
-                        break;
-                    case 3:
-                        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,graphic_pipelines.scene_shadow_VSSM);
-                        break;
-                }
-                    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,0,1,descriptor_sets.scene.Address(),0, nullptr);
-                draw(demo_scene, pipeline_layout);
+            // 屏幕 pass 接入 FrameGraph：颜色 = 导入的 swapchain image（layout 转换交给 render pass），
+            // 深度 = 图拥有的 transient 纹理。原先的 rpwf_ds 组合与它带来的隐式转换一并删除。
+            const auto& swapchain_info = VulkanSwapchainManager::get_singleton().get_swapchain_create_info();
+            frame_graph_.reset();
+            frame_graph_.set_name("ShadowMapping");
+
+            framegraph::TextureDesc color_desc;
+            color_desc.name = "SwapchainImage";
+            color_desc.format = swapchain_info.imageFormat;
+            color_desc.extent = VkExtent3D{ swapchain_info.imageExtent.width, swapchain_info.imageExtent.height, 1 };
+            color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
+            const framegraph::ResourceHandle color = frame_graph_.import_texture(
+                color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                /*externally_synchronized=*/true);
+
+            framegraph::TextureDesc depth_desc;
+            depth_desc.name = "Depth";
+            depth_desc.format = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
+            depth_desc.extent = color_desc.extent;
+            depth_desc.usage = framegraph::ImageUsage::DepthStencilAttachment | framegraph::ImageUsage::Sampled;
+            const framegraph::ResourceHandle depth = frame_graph_.create_texture(depth_desc);
+
+            frame_graph_.add_graphics_pass("Scene")
+                .write(color, framegraph::usage::color_attachment_write())
+                .write(depth, framegraph::usage::depth_stencil_write())
+                .execute([this, color, depth](framegraph::PassContext& context) {
+                    record_scene_pass(context, color, depth);
+                });
+
+            if (!frame_graph_.compile()) {
+                outstream << std::format("[ ShadowMapping ] compile 失败: {}\n", frame_graph_.get_error());
+                return;
             }
-            render_pass.cmd_end(command_buffer);
+            executor_.import_texture(color,
+                                     VulkanSwapchainManager::get_singleton().get_swapchain_image(current_image_index),
+                                     VulkanSwapchainManager::get_singleton().get_swapchain_image_view(current_image_index));
+            executor_.set_synchronization2(
+                VulkanCore::get_singleton().get_vulkan_device().get_physical_device_vulkan13_features().synchronization2 == VK_TRUE);
+            if (!executor_.prepare(frame_graph_)) {
+                outstream << std::format("[ ShadowMapping ] prepare 失败: {}\n", executor_.get_error());
+                return;
+            }
+            executor_.execute(frame_graph_, command_buffer);
 
             // imgui rpwf
             imgui_render(current_image_index,clear_values);
@@ -295,6 +304,10 @@ private:
     float light_size = 2.5f;
     float light_fov = 45.f;
     VulkanglTFModel demo_scene;
+
+    // 屏幕 pass 已经接入 FrameGraph（图拥有 depth，颜色用外部同步的 swapchain image）
+    framegraph::FrameGraph frame_graph_;
+    framegraph::FrameGraphExecutor executor_;
 
     int shadow_filter_mode = 0;
 
@@ -406,6 +419,76 @@ private:
     VulkanDescriptorSetLayout descriptor_set_layout_compute;
     VulkanDescriptorSetLayout descriptor_set_layout_offscreen;
 
+    // 屏幕 pass 的录制：render pass / framebuffer 由图（executor）提供。
+    void record_scene_pass(framegraph::PassContext& context, framegraph::ResourceHandle color,
+                           framegraph::ResourceHandle depth) {
+        auto* frame = static_cast<framegraph::FrameGraphExecution*>(context.user_data);
+        const VkCommandBuffer cmd = frame->command_buffer;
+
+        const framegraph::RenderTargetAttachment attachments[2] = {
+            { .resource = color,
+              .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+              .initial_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+              .final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_STORE },
+            { .resource = depth,
+              .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+              .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+              .store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+              .stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+              .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+              .depth_stencil = true },
+        };
+        const framegraph::RenderTarget* target = executor_.acquire_render_target(frame_graph_, attachments);
+        if (!target) {
+            outstream << std::format("[ ShadowMapping ] 获取 render target 失败: {}\n", executor_.get_error());
+            return;
+        }
+
+        VkClearValue clear_values[2] = {
+            {.color = { 0.f, 0.f, 0.f, 1.f }},
+            {.depthStencil = { 1.f, 0 }}
+        };
+        VkRenderPassBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = target->render_pass;
+        begin_info.framebuffer = target->framebuffer;
+        begin_info.renderArea = VkRect2D{ {}, target->extent };
+        begin_info.clearValueCount = 2;
+        begin_info.pClearValues = clear_values;
+
+        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        {
+            VkViewport viewport = {
+                .width = static_cast<float>(window_size.width),
+                .height = static_cast<float>(window_size.height),
+                .minDepth = 0.f,
+                .maxDepth = 1.f
+            };
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            VkRect2D scissor = { .offset = {0, 0}, .extent = {window_size.width, window_size.height} };
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            switch (shadow_filter_mode) {
+                case 0:
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphic_pipelines.scene_shadow);
+                    break;
+                case 1:
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphic_pipelines.scene_shadow_PCF);
+                    break;
+                case 2:
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphic_pipelines.scene_shadow_PCSS);
+                    break;
+                case 3:
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphic_pipelines.scene_shadow_VSSM);
+                    break;
+            }
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1,
+                                    descriptor_sets.scene.Address(), 0, nullptr);
+            draw(demo_scene, pipeline_layout);
+        }
+        vkCmdEndRenderPass(cmd);
+    }
     void update_uniform_data() {
         update_light();
 
