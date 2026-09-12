@@ -504,7 +504,7 @@ graph.execute();                                   // v1：按编译顺序回调
 
 已知限制（不要当成已完成）：
 
-- 没有 executor：尚未分配真实 image / buffer，也没有 `vkCmdPipelineBarrier2` 录制，因此 validation layer 未参与验证；
+- ~~没有 executor~~：该限制已在第二切片解除，见 §5.7（executor 负责真实 image / buffer、barrier 录制与 pass 执行；同步2 分支已实现，本机设备未启用该 feature，实跑走旧路径翻译）；
 - 未实现 queue family ownership transfer（`src/dst_queue_family` 目前恒为 `VK_QUEUE_FAMILY_IGNORED`）；
 - 未实现 transient 资源内存复用（aliasing）、冗余 barrier 消除、async compute 重叠分析；
 - 同一 pass 内不允许对同一资源做不同 layout 的访问（v1 直接报错，而不是拆分 barrier）；
