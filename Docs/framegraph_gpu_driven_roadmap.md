@@ -1308,6 +1308,37 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 
 下一步（按需，不再强求迁移老 demo）：`FrameGraphOffScreenTest` 的合成 pass → 其余 VulkanTests（可选）；主线优先级是 §14.1 的场景接入 + GPU-driven。
 
+### 14.5 多格式资产加载：assimp（2026-09-12 决策，2026-09-13 落地第一阶段）
+
+**为什么需要**：Bistro（ORCA）只提供 FBX，San Miguel / Rungholt / Emerald Square 是 OBJ/PLY，而引擎目前只读 glTF/GLB（tinygltf）。要让这些"原生大场景"进管线，必须先解决格式问题。
+
+**方案对照（决策记录）**
+
+| 方案 | 引擎改动 | 估计工作量 | 结论 |
+| --- | --- | --- | --- |
+| A. 离线转换（Blender/assimp CLI → GLB） | 0 行引擎代码 | 0.5 天 | 当时先选它；但每来一个格式都要手工转，且工具链不进仓库 |
+| **B. assimp 作为运行时 loader（选定）** | 新 loader + 依赖接入 | 3–6 天（静态几何） | **一次覆盖 FBX/OBJ/PLY**，避免"每个格式一个 loader"；BSD-3 许可清爽 |
+| C. Autodesk FBX SDK | SDK 集成 + 场景图映射 | 1–2 周（静态） | 许可/分发/CI 成本高，收益只覆盖 FBX |
+| D. 自研 FBX 解析器 | 二进制记录、属性数组、zlib、版本兼容 | 3–8 周 | 投入产出比极差，不做 |
+
+**第一阶段已落地（提交 `3a52ef3`，分支 `codex/assimp-loader`）**
+
+- `scripts/bootstrap-dependencies.ps1` 新增 **assimp v6.0.5 固定版本**（源码 zip → `External/assimp`，标记文件 `include/assimp/Importer.hpp`），沿用"固定版本 + `External/`（gitignore）"的可复现依赖模式；
+- `CMakeLists.txt`：依赖标记加入 assimp；`add_subdirectory` 构建，**只开启 FBX/OBJ/PLY importer**（关闭 tests/tools/samples/export、关闭 warnings-as-errors）；`BUILD_SHARED_LIBS=OFF` **静态链接**，不额外部署 DLL；
+- **选型细节**：GitHub release 的 `windows-x64-v6.0.5.zip` **只有 DLL/PDB、没有头文件与 .lib**，C++ 无法直接用，因此改为源码固定版本 + CMake 构建（实测 160 个编译单元，1–2 分钟）；
+- **验证**：`scripts/build.ps1 -Configuration Debug` 全量通过，产出 `assimp-vc145-mtd.lib` 并成功链接进 `VulkanRenderer.exe`（应用行为未变）。
+
+**第二阶段（待做，§14.1 的 Bistro 基线依赖它）**
+
+1. `Geometry/AssimpModelLoader.h`：把 `aiScene` 映射到**现有 `VulkanglTFModel` 结构**，复用 demo 已有 descriptor 流程：
+   - 导入 flag：`aiProcess_Triangulate | PreTransformVertices | GenSmoothNormals | FlipUVs | JoinIdenticalVertices`（把节点层级烘进顶点，静态几何一步到位）；
+   - 材质取 base color factor；贴图**先只接受 png/jpg/tga**，**DDS 跳过并告警**（Bistro 是 DDS-only，所以先出几何版本）；
+   - 无贴图材质复用既有的 **1×1 白色兜底贴图**（`glTFLoading` 在 §5.11 之后已有该兜底）；
+2. **按扩展名分派**：`glTFLoading`、`InstancedSceneTest` 里 `.gltf/.glb` 走 tinygltf，`.fbx/.obj/.ply` 走 assimp；之后 `--scene Assets/benchmark/Bistro/.../BistroExterior.fbx` 可直接运行；
+3. **Bistro 基线**：预期"数千 draw + 百万三角形"会把 **CPU 提交**压满（现有 `glTFLoading` 是每图元一次 bind+draw），这正是 bindless / indirect draw 的对照基线；
+4. **DDS 贴图（后续"带宽版本"预设）**：离线用 `texconv`（microsoft/DirectXTex）批量转 PNG，或运行时集成 BCn 解码（如单头库 `bcdec`）；两者都独立于 §14.5 的几何 loader。
+
+**边界与风险**：assimp 对 FBX 的部分高级特性（NURBS、部分动画/约束）支持有限——本项目只做**静态几何**，不受影响；assimp 不负责贴图解码（DDS 问题依旧存在）；D 盘剩余空间有限（见 §14.1.1 的资产体积说明）。
 ## 15. NVIDIA Profile 采集清单（Nsight Graphics / Nsight Systems）
 
 定位：**Nsight 用于归因，不作为 benchmark 数字来源**（有插桩开销、不可复现、不能 CI）。简历数字一律取 §14.2 的 CSV；Nsight 的结论以"分析证据"形式保存（截图 + 结论 + 工具版本），trace 文件不入库。
