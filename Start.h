@@ -173,6 +173,10 @@ inline std::string benchmark_csv;
 // 实际加载的资产（由 demo 的 load_assets 写入，benchmark summary 会记录，避免 (default) 这种歧义）
 inline std::string loaded_scene_asset;
 
+// 每帧实际发出的 draw call 数（demo 的 load_assets 写入）：写进 summary.csv，
+// 让"逐图元提交把 CPU 压满"这类结论能回指到带数字的原始记录。
+inline uint32_t loaded_scene_draw_calls = 0;
+
 // --instances <N>：实例化基准场景的实例数（默认 100000）
 inline int benchmark_instances = 100000;
 

@@ -51,7 +51,8 @@ function Get-Bistro {
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     Expand-Archive -LiteralPath $BistroArchive -DestinationPath $target -Force
 
-    # 引擎只读 glTF/GLB：ORCA 包是 FBX/OBJ，需要一次性转换（assimp 或 Blender 均可）。
+    # 引擎从 §14.5 第二阶段起可以直接读 FBX（运行时 assimp loader），所以"转 GLB"不再是必需步骤：
+    # 解压后直接 --scene ...\BistroExterior.fbx 即可；只有需要走 tinygltf 路径/要 GLB 时才转换。
     $scenes = Get-ChildItem -LiteralPath $target -Recurse -File -Include *.fbx, *.obj -ErrorAction SilentlyContinue
     if ($scenes.Count -eq 0) {
         Write-Host "[bistro] 未找到 .fbx/.obj（请确认解压内容）"
@@ -62,10 +63,8 @@ function Get-Bistro {
         if (Get-Command $candidate -ErrorAction SilentlyContinue) { $converter = $candidate; break }
     }
     if ($converter -eq $null) {
-        Write-Host "[bistro] 已解压场景源文件，但没有找到转换器。安装其一后重跑本脚本："
-        Write-Host "         - assimp  : winget install assimp && assimp export BistroExterior.fbx BistroExterior.glb"
-        Write-Host "         - Blender : blender --background --python convert_bistro.py"
-        $scenes | Select-Object -First 5 | ForEach-Object { Write-Host ("         source: " + $_.FullName) }
+        Write-Host "[bistro] 已解压：引擎可以直接加载 FBX（assimp 运行时 loader），无需转换。示例："
+        $scenes | Select-Object -First 5 | ForEach-Object { Write-Host ("         VulkanRenderer --demo glTFLoading --scene ""{0}""" -f $_.FullName) }
         return
     }
     foreach ($scene in $scenes) {
@@ -94,7 +93,7 @@ bpy.ops.export_scene.gltf(filepath=argv[1], export_format="GLB")
 if ($Scene -in @("all", "sponza")) { Get-Sponza }
 if ($Scene -in @("all", "bistro")) { Get-Bistro }
 
-Write-Host ""
-Write-Host "使用方式（--scene 指向下面任一 glTF）："
-Get-ChildItem -LiteralPath $Destination -Recurse -Filter *.gltf -ErrorAction SilentlyContinue |
+
+Write-Host "使用方式（--scene 指向下面任一资产；.gltf 走 tinygltf，.fbx/.obj/.ply 走 assimp）："
+Get-ChildItem -LiteralPath $Destination -Recurse -File -Include *.gltf, *.fbx, *.obj, *.ply -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host ("  VulkanRenderer --demo glTFLoading --scene ""{0}""" -f $_.FullName) }

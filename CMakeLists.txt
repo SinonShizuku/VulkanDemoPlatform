@@ -229,6 +229,7 @@ add_executable(VulkanRenderer
     Shader/ShaderLoader.h
     Shader/ShaderLoader.cpp
     Geometry/Model.h
+    Geometry/AssimpModelLoader.h
     Demos/BasicRendering/glTFLoading.h
     Interaction/Camera.h
     Demos/DemoBase3D.h
@@ -244,6 +245,10 @@ target_include_directories(VulkanRenderer
         ${VULKAN_RENDERER_EXTERNAL_DIR}/stb
         ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
+        # assimp 必须排在 ktx 之前：External/ktx/other_include 里带了一份旧版 assimp 头文件
+        # （没有 aiTextureType_BASE_COLOR 等 PBR 枚举），而 ktx 的 PUBLIC include 会排在链接目标的前面。
+        # 不显式提前，Geometry/AssimpModelLoader.h 会解析到旧头文件并报 C2065。
+        ${VULKAN_RENDERER_EXTERNAL_DIR}/assimp/include
 )
 
 target_compile_definitions(VulkanRenderer PRIVATE

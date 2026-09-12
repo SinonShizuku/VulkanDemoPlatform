@@ -2,6 +2,7 @@
 #include "../DemoBase3D.h"
 #include "../../Geometry/Vertex.h"
 #include "../../Geometry/Model.h"
+#include "../../Geometry/AssimpModelLoader.h"
 
 #include "../../VulkanBase/components/VulkanTexture.h"
 #include "../../VulkanBase/components/VulkanSampler.h"
@@ -139,6 +140,9 @@ private:
 
     VulkanglTFModel gltf_model;
     std::string loaded_scene_name;
+    glm::vec3 scene_bounds_min = glm::vec3(0.0f);
+    glm::vec3 scene_bounds_max = glm::vec3(0.0f);
+    bool has_scene_bounds = false;
 
     // struct UniformData {
     //     glm::mat4 projection = flip_vertical(glm::perspective(glm::radians(60.0f), (float)window_size.width / (float)window_size.height, 0.1f, 256.0f));
@@ -401,8 +405,15 @@ private:
             return;
         }
 
-        size_t vertex_buffer_size = vertex_buffer.size() * sizeof(VulkanglTFModel::Vertex);
-        size_t index_buffer_size = index_buffer.size() * sizeof(uint32_t);
+        upload_model_buffers(vertex_buffer, index_buffer);
+        loaded_scene_draw_calls = count_draw_calls();
+    }
+
+    // 顶点/索引上传：tinygltf 与 assimp 两条加载路径共用。
+    void upload_model_buffers(const std::vector<VulkanglTFModel::Vertex>& vertex_buffer,
+                              const std::vector<uint32_t>& index_buffer) {
+        const size_t vertex_buffer_size = vertex_buffer.size() * sizeof(VulkanglTFModel::Vertex);
+        const size_t index_buffer_size = index_buffer.size() * sizeof(uint32_t);
         gltf_model.indices.count = static_cast<uint32_t>(index_buffer.size());
 
         if (vertex_buffer_size > 0) {
@@ -415,6 +426,72 @@ private:
         }
     }
 
+    // §14.5 第二阶段：FBX/OBJ/PLY 走 assimp，映射到同一个 VulkanglTFModel，复用现有 descriptor/绘制流程。
+    void load_assimp_file(const std::filesystem::path& filename) {
+        AssimpModelLoader::Options options;
+        AssimpModelLoader::Stats stats;
+        std::string error;
+        std::vector<VulkanglTFModel::Vertex> vertex_buffer;
+        std::vector<uint32_t> index_buffer;
+        if (!AssimpModelLoader::load(filename, gltf_model, vertex_buffer, index_buffer, options, stats, error)) {
+            outstream << std::format("[ Model ] 打不开 {}（assimp）：{}\n", filename.string(), error);
+            return;
+        }
+        upload_model_buffers(vertex_buffer, index_buffer);
+        loaded_scene_draw_calls = count_draw_calls();
+
+        outstream << std::format(
+            "[ Model ] assimp: {} | mesh={} primitive={} vertex={} index={} material={} texture={} skipped_texture={}\n",
+            filename.filename().string(), stats.mesh_count, stats.primitive_count, stats.vertex_count,
+            stats.index_count, stats.material_count, stats.texture_count, stats.skipped_texture_count);
+        for (const std::string& warning : stats.warnings)
+            outstream << std::format("[ Model ] WARN {}\n", warning);
+
+        // 包围盒先存下来：initialize_camera() 在 load_assets() 之后才跑，那里再做实际取景，
+        // 否则固定机位会被默认值覆盖（踩过一次）。
+        if (stats.has_bounds) {
+            scene_bounds_min = stats.bounds_min;
+            scene_bounds_max = stats.bounds_max;
+            has_scene_bounds = true;
+        }
+    }
+
+    // 每帧的 draw call 数 = primitive 数（当前实现逐图元一次 bind + draw），写进 benchmark 元数据。
+    uint32_t count_draw_calls() const {
+        uint32_t count = 0;
+        for (const VulkanglTFModel::Node* node : gltf_model.nodes)
+            count += count_node_draw_calls(node);
+        return count;
+    }
+
+    static uint32_t count_node_draw_calls(const VulkanglTFModel::Node* node) {
+        uint32_t count = static_cast<uint32_t>(node->mesh.primitives.size());
+        for (const VulkanglTFModel::Node* child : node->children)
+            count += count_node_draw_calls(child);
+        return count;
+    }
+
+    // 由包围盒推一个固定机位：方位角固定（沿 -Z 看）、俯视 20°，距离由包围球与 FOV 推出。
+    // Camera 的约定是 view = translate(position) * rotate，且 flip_y 会把 translation.y 再取反，
+    // 所以 position 字段不等于相机世界坐标：必须按 t = -R * camera_position 回填。
+    void frame_camera_on_bounds(const glm::vec3& bounds_min, const glm::vec3& bounds_max) {
+        const glm::vec3 center = (bounds_min + bounds_max) * 0.5f;
+        const float radius = std::max(glm::length(bounds_max - bounds_min) * 0.5f, 1e-3f);
+        const float elevation_deg = -20.0f;
+        const float elevation = glm::radians(elevation_deg);
+        const glm::vec3 direction{ 0.0f, std::sin(elevation), -std::cos(elevation) };
+        const float fov_deg = 60.0f;
+        const float distance = radius / std::sin(glm::radians(fov_deg * 0.5f)) * 1.1f;
+        const glm::vec3 camera_position = center - direction * distance;
+
+        camera.set_perspective(fov_deg, (float)window_size.width / (float)window_size.height,
+                               std::max(radius * 0.01f, 0.01f), distance + radius * 4.0f);
+        camera.set_rotation({ elevation_deg, 0.0f, 0.0f });
+        const glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), -elevation, glm::vec3(1.0f, 0.0f, 0.0f));
+        const glm::vec3 translation = -glm::vec3(rotation * glm::vec4(camera_position, 0.0f));
+        camera.set_position({ translation.x, -translation.y, translation.z });
+    }
+
     void load_assets() {
         // --scene 指定时优先；否则用默认 FlightHelmet。
         auto model_path = G_PROJECT_ROOT / "Assets/models/FlightHelmet/glTF/FlightHelmet.gltf";
@@ -422,7 +499,11 @@ private:
             model_path = resolve_scene_asset(command_line_scene);
         loaded_scene_name = model_path.filename().string();
         loaded_scene_asset = model_path.string();
-        load_glTF_file(model_path.string());
+        // §14.5：按扩展名分派——.fbx/.obj/.ply 走 assimp，.gltf/.glb 继续走 tinygltf。
+        if (AssimpModelLoader::supports(model_path))
+            load_assimp_file(model_path);
+        else
+            load_glTF_file(model_path.string());
     }
 
     void initialize_camera() {
@@ -430,5 +511,11 @@ private:
         camera.set_perspective(60.0f, (float)window_size.width / (float)window_size.height, 0.1f, 256.0f);
         camera.set_rotation({ 45.0f, 0.0f, 0.0f });
         camera.set_position({ 0.0f, -0.1f, -1.0f });
+
+        // §14.1.1 的相机策略：assimp 路径（FBX/OBJ/PLY）的尺寸跨好几个数量级，
+        // 默认机位只适合随仓库自带的小模型，所以有包围盒时改用它推一个确定性固定机位。
+        // 显式命名机位（bistro_view_0/1/2）与 --camera-path 是后续项。
+        if (has_scene_bounds)
+            frame_camera_on_bounds(scene_bounds_min, scene_bounds_max);
     }
 };

@@ -2,6 +2,7 @@
 #include "../DemoBase3D.h"
 #include "../../Geometry/Vertex.h"
 #include "../../Geometry/Model.h"
+#include "../../Geometry/AssimpModelLoader.h"
 #include "../../VulkanBase/components/VulkanMemory.h"
 #include "../../VulkanBase/FrameGraph/FrameGraph.h"
 #include "../../VulkanBase/FrameGraph/FrameGraphExecutor.h"
@@ -295,6 +296,17 @@ private:
         loaded_scene_name = model_path.filename().string();
         loaded_scene_asset = model_path.string();
 
+        // §14.5：按扩展名分派——.fbx/.obj/.ply 走 assimp，.gltf/.glb 继续走 tinygltf。
+        if (AssimpModelLoader::supports(model_path))
+            load_assimp_scene(model_path);
+        else
+            load_glTF_scene(model_path);
+
+        instance_count_ = benchmark_instances > 0 ? static_cast<uint32_t>(benchmark_instances) : 100000u;
+        loaded_scene_draw_calls = 1;    // 整个场景一次实例化 draw
+    }
+
+    void load_glTF_scene(const std::filesystem::path& model_path) {
         tinygltf::Model gltf_input;
         tinygltf::TinyGLTF gltf_context;
         std::string error, warning;
@@ -309,6 +321,29 @@ private:
             return;
         for (int n : gltf_input.scenes[0].nodes)
             demo_scene.load_node(gltf_input.nodes[n], gltf_input, nullptr, index_buffer, vertex_buffer);
+        upload_model_buffers(vertex_buffer, index_buffer);
+    }
+
+    void load_assimp_scene(const std::filesystem::path& model_path) {
+        AssimpModelLoader::Options options;
+        options.load_textures = false;      // 实例化压测只用几何（loader 会把顶点色一并带上）
+        AssimpModelLoader::Stats stats;
+        std::string error;
+        std::vector<uint32_t> index_buffer;
+        std::vector<VulkanglTFModel::Vertex> vertex_buffer;
+        if (!AssimpModelLoader::load(model_path, demo_scene, vertex_buffer, index_buffer, options, stats, error)) {
+            outstream << std::format("[ InstancedScene ] 打不开 {}（assimp）：{}\n", model_path.string(), error);
+            return;
+        }
+        upload_model_buffers(vertex_buffer, index_buffer);
+        outstream << std::format("[ InstancedScene ] assimp: {} | mesh={} primitive={} vertex={} index={}\n",
+                                 model_path.filename().string(), stats.mesh_count, stats.primitive_count,
+                                 stats.vertex_count, stats.index_count);
+    }
+
+    // 顶点/索引上传：tinygltf 与 assimp 两条加载路径共用。
+    void upload_model_buffers(const std::vector<VulkanglTFModel::Vertex>& vertex_buffer,
+                              const std::vector<uint32_t>& index_buffer) {
         if (!vertex_buffer.empty()) {
             const size_t vertex_bytes = vertex_buffer.size() * sizeof(VulkanglTFModel::Vertex);
             demo_scene.vertices.create(vertex_bytes);
@@ -320,7 +355,6 @@ private:
             demo_scene.indices.index_buffer.create(index_bytes);
             demo_scene.indices.index_buffer.transfer_data(index_buffer.data(), index_bytes);
         }
-        instance_count_ = benchmark_instances > 0 ? static_cast<uint32_t>(benchmark_instances) : 100000u;
     }
 
     VulkanglTFModel demo_scene;
