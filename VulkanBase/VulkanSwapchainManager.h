@@ -317,17 +317,30 @@ public:
             vkDestroySwapchainKHR(vulkan_device->get_device(), swapchain_create_info.oldSwapchain, nullptr);
             swapchain_create_info.oldSwapchain = VK_NULL_HANDLE;
         }
+        // 上一帧发现 swapchain 已 suboptimal：此时上一帧的 fence 已等待过，可以安全重建。
+        if (swapchain_recreate_pending) {
+            swapchain_recreate_pending = false;
+            if (VkResult result = recreate_swapchain())
+                return result;
+        }
+
         while (VkResult result = vkAcquireNextImageKHR(vulkan_device->get_device(), swapchain, UINT64_MAX, semaphore_image_is_available, VK_NULL_HANDLE, &current_image_index)) {
             switch (result) {
                 case VK_SUBOPTIMAL_KHR:
+                    // SUBOPTIMAL 表示“图像已经 acquire 成功、但 swapchain 需要重建”：
+                    // 本帧照常使用这张图像，重建推迟到下一帧的 acquire 之前，
+                    // 否则会用一张“从未 acquire”的新 swapchain 图像渲染（validation 会直接报错）。
+                    swapchain_recreate_pending = true;
+                    break;
                 case VK_ERROR_OUT_OF_DATE_KHR:
-                    if (VkResult result = recreate_swapchain())
-                        return result;
-                    break; //注意重建交换链后仍需要获取图像，通过break递归，再次执行while的条件判定语句
+                    if (VkResult recreate_result = recreate_swapchain())
+                        return recreate_result;
+                    continue; // 重建成功后重新 acquire
                 default:
                     outstream << std::format("[ graphicsBase ] ERROR\nFailed to acquire the next image!\nError code: {}\n", int32_t(result));
                     return result;
             }
+            break;
         }
         return VK_SUCCESS;
     }
@@ -353,6 +366,8 @@ private:
     std::vector<std::function<void()>> callbacks_destroy_swapchain;
 
     uint32_t current_image_index = 0;
+    // swapchain 处于 suboptimal：下一帧 acquire 之前重建一次
+    bool swapchain_recreate_pending = false;
 
     result_t create_swapchain_internal() {
         if (result_t result = vkCreateSwapchainKHR(vulkan_device->get_device(), &swapchain_create_info, nullptr, &swapchain)) {
