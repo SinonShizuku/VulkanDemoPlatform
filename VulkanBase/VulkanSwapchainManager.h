@@ -1,6 +1,7 @@
 #pragma once
 #include "VulkanCore.h"
 #include "../Start.h"
+#include "components/VulkanSync.h"
 #include <functional>
 
 class VulkanSwapchainManager {
@@ -25,6 +26,7 @@ public:
         swapchain = VK_NULL_HANDLE;
         swapchain_images.resize(0);
         swapchain_image_views.resize(0);
+        render_finished_semaphores.clear();
         swapchain_create_info = {};
     }
 
@@ -56,6 +58,15 @@ public:
 
     [[nodiscard]] VkImageView get_swapchain_image_view(uint32_t index) const {
         return swapchain_image_views[index];
+    }
+
+    // 每张 swapchain image 一个 render-finished semaphore：presentation engine 可能仍在
+    // 使用上一张 image 的信号量，复用同一个会触发
+    // VUID-vkQueueSubmit-pSignalSemaphores-00067（swapchain semaphore reuse）。
+    [[nodiscard]] VkSemaphore get_render_finished_semaphore(uint32_t index) const {
+        return index < render_finished_semaphores.size()
+                   ? static_cast<VkSemaphore>(render_finished_semaphores[index])
+                   : VK_NULL_HANDLE;
     }
 
     [[nodiscard]] uint32_t get_swapchain_image_count() const {
@@ -288,6 +299,7 @@ public:
             for (auto &i:swapchain_image_views)
                 if (i) vkDestroyImageView(vulkan_device->get_device(), i, nullptr);
             swapchain_image_views.resize(0);
+            render_finished_semaphores.clear();
             vkDestroySwapchainKHR(vulkan_device->get_device(), swapchain, nullptr);
             swapchain = VK_NULL_HANDLE;
             swapchain_create_info = {};
@@ -334,6 +346,7 @@ private:
     VkSwapchainKHR swapchain;
     std::vector<VkImage> swapchain_images;
     std::vector<VkImageView> swapchain_image_views;
+    std::vector<semaphore> render_finished_semaphores;
     VkSwapchainCreateInfoKHR swapchain_create_info = {};
 
     std::vector<std::function<void()>> callbacks_create_swapchain;
@@ -374,6 +387,10 @@ private:
                 return result;
             }
         }
+
+        // 与 swapchain image 一一对应的 render-finished semaphore
+        render_finished_semaphores.clear();
+        render_finished_semaphores.resize(swapchain_image_count);
         return VK_SUCCESS;
     }
 };

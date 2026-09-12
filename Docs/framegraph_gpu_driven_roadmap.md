@@ -202,7 +202,7 @@ P0 已修复：
 7. 没有 transient resource 和 memory aliasing；
 8. 没有统一的 GPU pass timing；
 9. 没有 benchmark / correctness 基础设施；
-10. 已有 Validation 错误：ImGui render pass 的 `LOAD` + `UNDEFINED` initialLayout；render-finished semaphore 跨 swapchain image 复用；图路径另触发 presentable image 的 acquire/layout 校验（需先把 swapchain 同步修好）。其中 pipeline `lineWidth=0` 已在 `602816f` 修复；
+10. 已有 Validation 错误：只剩 ImGui render pass 的 `LOAD` + `UNDEFINED` initialLayout（以及一条来自其它 demo 手写 pipeline 的 `lineWidth=0` 告警）。pipeline `lineWidth=0` 在 `602816f` 修复；render-finished semaphore 跨 swapchain image 复用已在本次修复（每张 image 一个 semaphore）并实跑确认消失；
 11. PBR/IBL 目前不能作为已完成能力对外陈述。
 
 ### 2.7 简历事实边界

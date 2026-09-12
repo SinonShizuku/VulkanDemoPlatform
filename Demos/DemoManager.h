@@ -195,16 +195,20 @@ public:
 
             current_demo->render_frame();
 
+            // render-finished semaphore 必须按 swapchain image 区分，否则会与 presentation
+            // engine 仍在使用的信号量冲突（VUID-vkQueueSubmit-pSignalSemaphores-00067）。
+            const uint32_t acquired_image = VulkanSwapchainManager::get_singleton().get_current_image_index();
+            const VkSemaphore render_finished =
+                VulkanSwapchainManager::get_singleton().get_render_finished_semaphore(acquired_image);
+
             VulkanCommand::get_singleton().submit_command_buffer_graphics(
                 current_demo->get_command_buffer(),
                 shared_resources.get_semaphore_image_is_available(),
-                shared_resources.get_semaphore_rendering_is_over(),
+                render_finished,
                 shared_resources.get_shared_fence()
             );
 
-            VulkanCommand::get_singleton().present_image(
-                shared_resources.get_semaphore_rendering_is_over()
-            );
+            VulkanCommand::get_singleton().present_image(render_finished);
 
             glfwPollEvents();
             update_fps_title(frame_timer);
