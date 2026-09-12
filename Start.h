@@ -170,6 +170,9 @@ inline int benchmark_frames = 0;
 inline int benchmark_warmup = 30;
 inline std::string benchmark_csv;
 
+// 实际加载的资产（由 demo 的 load_assets 写入，benchmark summary 会记录，避免 (default) 这种歧义）
+inline std::string loaded_scene_asset;
+
 // --scene 的解析规则：绝对路径直接用；否则先按 Assets/models/<name> 找，再按仓库根目录相对路径找，
 // 必要时补 .gltf 后缀；找不到时返回按 Assets/models 解析的结果，由调用方给出错误信息。
 inline std::filesystem::path resolve_scene_asset(const std::string& name) {

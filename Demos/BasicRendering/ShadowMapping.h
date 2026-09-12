@@ -981,6 +981,7 @@ private:
         if (!command_line_scene.empty())
             model_path = resolve_scene_asset(command_line_scene);
         loaded_scene_name = model_path.filename().string();
+        loaded_scene_asset = model_path.string();
         load_glTF_file(model_path.string());
     }
 

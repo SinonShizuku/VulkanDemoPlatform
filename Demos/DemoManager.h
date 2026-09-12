@@ -280,6 +280,7 @@ public:
                     std::vector<std::string> metadata = {
                         std::string("demo,") + current_demo->get_type(),
                         std::string("scene,") + (command_line_scene.empty() ? std::string("(default)") : command_line_scene),
+                        std::string("scene_asset,") + (loaded_scene_asset.empty() ? std::string("(unknown)") : loaded_scene_asset),
                         std::string("resolution,") + std::to_string(extent.width) + "x" + std::to_string(extent.height),
                         std::string("gpu,") + properties.deviceName,
                         std::string("driver,") + std::format("{}.{}.{}", VK_VERSION_MAJOR(properties.driverVersion), VK_VERSION_MINOR(properties.driverVersion), VK_VERSION_PATCH(properties.driverVersion)),

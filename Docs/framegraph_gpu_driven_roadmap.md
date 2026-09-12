@@ -1178,7 +1178,20 @@ VulkanRenderer --demo <名称> [--scene <资产>] --frames <N> [--warmup <M>] [-
 - **GPU**：query pool 两个 timestamp（`TOP_OF_PIPE` / `BOTTOM_OF_PIPE`），由 `VulkanCommandBuffer::begin/end` 自动写入（因此不需要改任何 demo），fence 等待后 `vkGetQueryPoolResults` 读取；
 - **输出**：`<前缀>-frames.csv`（逐帧 cpu_ms/gpu_ms）+ `<前缀>-summary.csv`（metadata: demo / scene / resolution / GPU / driver / vulkan_device / vsync / warmup / frames + CPU 与 GPU 的 P50/P95/P99），同时打到 stdout。
 
-首次实测（RTX 5090 D，1920×1061，warmup 30）：
+首次实测（RTX 5090 D，1920×1061，warmup 30，未锁频，vsync 关闭）。**注意：之前的表把 scene 写成 "(default)" 有歧义，且当时的 per-pass 数据其实是在 TeapotsAndPillars 上测的**；现在 `summary.csv` 增加了 `scene_asset` 字段记录真实加载的资产：
+
+| 命令 | CPU p50 (ms) | GPU p50 (ms) | per-pass GPU p50 (ms) |
+| --- | --- | --- | --- |
+| `--demo ShadowMapping`（默认资产 TeapotsAndPillars.gltf） | 0.977 | 0.2018 | Shadow 0.0099 / SAT 链 0.1702 / Scene 0.0133 / Present 0.0080 |
+| `--demo ShadowMapping --scene Assets/benchmark/Sponza/glTF/Sponza.gltf` | 1.183 | 0.2378 | Shadow 0.0340 / SAT 链 0.1680 / Scene 0.0267 / Present 0.0078 |
+| `--demo glTFLoading --scene Assets/benchmark/Sponza/glTF/Sponza.gltf` | 0.749 | 0.0355 | Scene 0.0282 / Present 0.0070 |
+
+三条结论：
+
+1. **SAT 链与场景无关**：换 Sponza 后 SAT 仍是 ~0.168 ms（2048² × RG32F × 8 张中间图 + 6 次 dispatch 的固定开销），而 Shadow / Scene 随场景变化（0.0099 → 0.0340；0.0133 → 0.0267）。这种"该变的变、该不变的没变"正是 timestamp 可信的强证据。
+2. **当前场景对 5090 来说太轻**：整帧 GPU 只有 0.03–0.24 ms，而 CPU（驱动 + 提交 + present）是 0.75–1.18 ms —— **当前完全 CPU-bound，GPU 99% 时间空闲**。这意味着用现在的场景做 GPU benchmark 没有意义，**必须上 `sponza_instanced_100k` 把 GPU 压满**，这也正是 §14.1 三个预设里第二个的用途。
+3. SAT 链是唯一"重"的 GPU 工作（0.17 ms），如果后续要优化 GPU 时间，它是第一优先级（例如把 8 张 RG32F 中间图减半或改成 fp16）。
+
 
 | 场景 | CPU p50 / p95 / p99 (ms) | GPU p50 / p95 / p99 (ms) |
 | --- | --- | --- |
