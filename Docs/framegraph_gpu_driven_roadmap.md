@@ -1125,3 +1125,47 @@ CSV / JSON 至少包含：
 
 > 不要为了增加功能数量而扩展范围。
 > 每一个新模块都必须进入同一条 RenderGraph 路径，并且产生可验证结果。
+
+---
+
+## 14. 主线：FrameGraph + Dynamic Rendering + GPU-driven（2026-09-12 定稿）
+
+项目只保留一条技术主线，所有新功能都必须落在这条线上，不再新增互不相干的 Demo：
+
+```text
+FrameGraph（唯一同步/布局来源）
+        +
+Dynamic Rendering（Vulkan 1.3 core，取代 VkRenderPass/VkFramebuffer 兼容路径）
+        +
+GPU-driven Rendering（bindless + compute culling + indirect draw）
+        +
+可复现 Benchmark（同一场景、同一口径、可回指原始数据）
+```
+
+### 14.1 基准场景三预设（定稿）
+
+| 预设 | 用途 | 规模 | 备注 |
+| --- | --- | --- | --- |
+| `sponza` | 正确性基线 / deferred / 阴影 / 光照对比 | 常规单场景 | Crytek Sponza（Intel "New Sponza" glTF 版本），CC-BY |
+| `sponza_instanced_100k` | GPU-driven 主力压测（bindless + frustum/Hi-Z culling + indirect draw） | Sponza 布局 + 10 万实例 | 合成实例，覆盖“真实遮挡 + 海量 draw” |
+| `bistro` | 重几何压力（带宽 / draw 提交 / LOD） | 外景 ~1M+ 三角形 | Amazon Lumberyard Bistro，需保留 attribution |
+
+`FlightHelmet`（仓库已有）继续作为材质 / IBL 正确性的小场景。资产通过 `scripts/fetch-benchmark-scenes.ps1` 下载到被 Git 忽略的目录，不把大资产入库。
+
+### 14.2 Benchmark 口径（与 §9 一致，硬约束）
+
+- 固定相机路径、分辨率、warmup 帧与采样帧数；
+- GPU timestamp 分 pass 统计，输出 CSV/JSON + P50/P95/P99；
+- 每份结果记录 GPU / 驱动 / SDK / OS / 锁频状态（`nvidia-smi -lgc/-lmc`）；
+- 简历里的每个数字都必须能回指到某次运行产生的原始 CSV。
+
+### 14.3 Dynamic Rendering 迁移计划
+
+目标：图成为唯一的同步与布局来源，`VkRenderPass` / `VkFramebuffer` 从渲染路径退场。
+
+1. **executor 增加 dynamic rendering 路径**：`acquire_rendering_info()` 返回 `VkRenderingInfo`（含各附件的 view / layout / load-store / clear value），与现有 `acquire_render_target()` 并存；
+2. **swapchain 图像回到图内**：去掉 `externally_synchronized`，由图标出 `UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR`（需要一个显式的 present 过渡用法 / pass）；
+3. **管线改用 `VkPipelineRenderingCreateInfo`**：`GraphicsPipelineCreateInfoPack` 增加 dynamic rendering 模式，render pass 兼容性约束（例如 dependencyCount 必须相同）随之消失；
+4. **按难度迁移**：`FrameGraphOffScreenTest` → `glTFLoading` → `ShadowMapping` → 其余 VulkanTests；最后删除 RHI 的 render pass/framebuffer 与 KHR 回退分支，把 `dynamicRendering` 设为硬性要求（本机 RTX 5090 D 已满足）。
+
+状态：**第 1–2 步进行中**（先迁 `glTFLoading` 验收），完成后在此处补验证数据。
