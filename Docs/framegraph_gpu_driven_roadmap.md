@@ -1152,6 +1152,20 @@ GPU-driven Rendering（bindless + compute culling + indirect draw）
 
 `FlightHelmet`（仓库已有）继续作为材质 / IBL 正确性的小场景。资产通过 `scripts/fetch-benchmark-scenes.ps1` 下载到被 Git 忽略的目录，不把大资产入库。
 
+**资产获取（2026-09-12 落地）**：`scripts/fetch-benchmark-scenes.ps1`
+
+```powershell
+# Sponza（Khronos glTF-Sample-Assets，blobless + sparse checkout，只拉 Models/Sponza）
+pwsh scripts/fetch-benchmark-scenes.ps1 -Scene sponza
+# Bistro（NVIDIA ORCA 需先接受许可手动下载，再把 zip 交给脚本解包）
+pwsh scripts/fetch-benchmark-scenes.ps1 -Scene bistro -BistroArchive <zip 路径>
+```
+
+资产落在 `Assets/benchmark/`（已加入 `.gitignore`），脚本结束时直接打印可用的 `--scene` 命令行。
+
+**冒烟验证（2026-09-12）**：`--demo glTFLoading --scene Assets/benchmark/Sponza/glTF/Sponza.gltf` → exit 0、零 VUID、无 leaked objects、stderr 为空、窗口标题 60 FPS（12 秒）。注意当前显示的是 `limitFrameRate` 下的上限值，**还不是可用的 benchmark 数字**——正式测量前要先去掉帧率上限，改用帧时间 / GPU timestamp 采样（§14.2）。
+
+`sponza_instanced_100k` 不需要新资产：在 `sponza` 基础上用代码生成 10 万实例布局（下一步 GPU-driven 阶段一起做）。
 ### 14.2 Benchmark 口径（与 §9 一致，硬约束）
 
 - 固定相机路径、分辨率、warmup 帧与采样帧数；

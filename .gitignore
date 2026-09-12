@@ -6,3 +6,4 @@ out/*
 .vs/*
 Shader/**/*.spv
 imgui.ini
+Assets/benchmark/*
