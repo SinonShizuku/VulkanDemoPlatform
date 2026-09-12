@@ -647,6 +647,21 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 
 ---
 
+### 5.11 ShadowMapping：shadow map / SAT 链迁入 FrameGraph（接口确认与执行计划，2026-09-12）
+
+§5.10 之后剩的部分：把阴影贴图与 SAT 计算链从 RHI 手里搬进图（分支 `codex/shadow-sat`）。本轮先把接口与改动顺序固定下来，避免边改边猜：
+
+- **图资源**：`ShadowDepth`（`D16_UNORM`，`DepthStencilAttachment | Sampled`）、`ShadowVsm`（与现有 `ca_offscreen_vsm` 同格式，`ColorAttachment | Sampled`）、SAT 中间图（行/列 block、scan、add，`Storage | Sampled`）；
+- **pass**：`Shadow`（graphics，写深度 + VSM）、6 个 SAT `add_compute_pass()`（`usage::storage_read()/storage_write()`）、`Scene`（graphics，`usage::sampled_read()` 采样 SAT 最终图）；
+- **删除手写同步**：`cmd_barrier_color_to_compute()`、`cmd_barrier_compute_to_fragment()` 与 SAT 链上的 barrier 全部交给图的规划；
+- **descriptor 重写**：`descriptor_sets.scene` 的 binding 1/2（两个 `COMBINED_IMAGE_SAMPLER`）与 compute 的 SAT bindings 必须在每帧 `prepare()` 之后、`execute()` 之前用图提供的 view 重写；`descriptor_sets.offscreen` 只绑 UBO，不需要改绑定；`descriptor_pool`（2 sets × 2 UBO + 2 combined sampler）可复用，不必重建；
+- **验收**：`ShadowMapping` 作为启动 demo（临时切换）validation 零错误 + 60 FPS + PCF/PCSS/VSSM 三种模式切换画面正常，然后还原默认 demo 并跑 `FrameGraphTests`。
+
+状态：本轮只完成接口确认与能力单测（§5.10 的 129 checks / 0 failures），**未改动 ShadowMapping 代码**；下一步按上面顺序实施。
+
+
+---
+
 ## 6. Synchronization 与 FrameContext 设计
 
 ### 6.1 当前模式
