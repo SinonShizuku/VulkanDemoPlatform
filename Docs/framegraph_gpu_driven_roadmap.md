@@ -1336,7 +1336,7 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
    - 无贴图材质复用既有的 **1×1 白色兜底贴图**（`glTFLoading` 在 §5.11 之后已有该兜底）；
 2. **按扩展名分派**：`glTFLoading`、`InstancedSceneTest` 里 `.gltf/.glb` 走 tinygltf，`.fbx/.obj/.ply` 走 assimp；之后 `--scene Assets/benchmark/Bistro/.../BistroExterior.fbx` 可直接运行；
 3. **Bistro 基线**：~~预期"数千 draw + 百万三角形"会把 **CPU 提交**压满~~（现有 `glTFLoading` 是每图元一次 bind+draw）——**2026-09-13 实测修正**：ORCA 的 FBX 只有 71–132 个 primitive，达不到这个量级，详见下面"验证 2"与"结论"；
-4. **DDS 贴图（后续"带宽版本"预设）**：离线用 `texconv`（microsoft/DirectXTex）批量转 PNG，或运行时集成 BCn 解码（如单头库 `bcdec`）；两者都独立于 §14.5 的几何 loader。
+4. **DDS 贴图**：离线用 `texconv`（microsoft/DirectXTex）批量转 PNG，或运行时集成 BCn 解码（如单头库 `bcdec`）——**2026-09-13 选择运行时解码并已落地**，见下面"第三阶段已落地"。
 
 **第二阶段已落地（2026-09-13，分支 `codex/assimp-loader`）**
 
@@ -1364,6 +1364,10 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 
 **验证 2：Bistro 几何基线（几何-only：622 个 DDS 全部按设计跳过 → 材质走 1×1 白色兜底）**
 
+> **注意（2026-09-13）：这一组数字暂不作为参考基线。** 当前 shader 还没有 PBR / 法线 / IBL，场景也没有真实的色调与光照负载，
+> 测出来的量级主要反映"场景太轻 + 着色太简单"，不是 Bistro 的真实负载。带贴图的复测（见第三阶段）也证实 p50 几乎不变。
+> 等 PBR shading 落地后重新采集，届时以新数字为准。
+
 命令：`--demo glTFLoading --scene Assets/benchmark/Bistro/Bistro_v5_2/<scene>.fbx --warmup 60 --frames 300 --csv out/benchmark/bistro-<tag>`（CSV 已留档；`gpu_clock,unlocked`）
 
 | 场景 | draw_calls | 顶点 / 索引 | CPU p50/p95/p99 (ms) | GPU p50/p95/p99 (ms) |
@@ -1380,12 +1384,36 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 2. 但目前仍是 **CPU-bound**（CPU p50 是 GPU p50 的 5–10 倍），说明"逐图元 bind + push constant + draw"的开销方向没错，只是量级不够——真正把 GPU 压满的仍然是 §14.1 的 `sponza_instanced_100k`（410 ms/frame，GPU-bound）。
 3. 要让 Bistro 变成真正的提交压力，需要先**把 draw call 数拉上去**（按材质/图元拆分、每图元多实例、或把内景做成多 pass 组合）；这件事和 GPU-driven（bindless + indirect 的收益点）一起做更合适，本轮不强行完成。
 4. 未锁频（`gpu_clock,unlocked`）：GPU 数字只用于同机相对比较，正式数字要在提权 shell 里跑 `scripts/lock-gpu-clocks.ps1 -Action lock`（§14.2）。
-5. DDS 贴图仍未接入（全部走白色兜底），"带宽预设"需要离线转 PNG 或运行时接 BCn 解码（下面第 4 条）。
+5. DDS 贴图**已接入**（运行时 BCn 解码，见第三阶段），但**着色仍是"base color + 简单 N·L"**：带贴图复测（`out/benchmark/bistro-exterior-dds-summary.csv`）CPU p50 1.052 ms / GPU p50 0.139 ms，与几何-only 基本同量级——
+   说明当前瓶颈既不是 draw 数也不是贴图带宽，而是**场景规模 + 着色复杂度**。这也是这一组数字暂不当参考基线的原因（PBR/法线/IBL 未接）。
 
 **脚本同步**：`scripts/fetch-benchmark-scenes.ps1` 的 Bistro 分支不再把"转 GLB"当成必需步骤——解压后可以直接 `--scene ...\BistroExterior.fbx`（assimp 运行时 loader），转换只保留给需要 GLB/tinygltf 路径的场景；脚本结尾也会把 `.fbx/.obj/.ply` 一起列出来。
 
-**第三阶段（下一步）**：把 draw call 数拉起来（按材质/图元拆分或每图元多实例）→ 得到真正的"提交压力"基线 → 再进 GPU-driven（bindless + indirect）做对照；DDS/BCn 与显式命名机位按需并行。
+**第三阶段（2026-09-13 已完成）**：DDS/HDR 运行时解码（见下）；**第四阶段**：PBR shading → 重新采集 Bistro 基线 → 拉高 draw call 数 → GPU-driven 对照。
 
+**第三阶段已落地（2026-09-13）：DDS / HDR 贴图解码**
+
+- 依赖：`scripts/bootstrap-dependencies.ps1` 新增 **bcdec**（单头文件 BC1–BC7 解码器，MIT / public domain 双许可；仓库没有 tag，固定到 commit `80859ed`），与其它依赖一样落在被忽略的 `External/`；`bcdec_implementation.cpp` 只在一个 TU 里展开实现（与 `stb_image_implementation.cpp` 同一套路）。
+- `Interaction/DdsImage.h`：DDS 头解析 + BCn 解码 → RGBA8，覆盖 **BC1/DXT1（含 1-bit alpha）、BC2/DXT3、BC3/DXT5、BC4/ATI1、BC5/ATI2、BC7** 以及 32 位未压缩（按掩码取通道，DX10 扩展头也认）；只取 **mip 0**，mip 链仍由引擎生成（与 glTF 路径一致）。Bistro v5.2 的 622 张贴图实测是 DXT1 / DXT5 / ATI2 三种，全部覆盖。
+- HDR（Radiance）：`stbi_loadf` 解成 32F 线性像素，再压成 **R16G16B16A16_SFLOAT** 上传。不用 32F 的原因：32F 在多数设备上不可线性过滤（采样与 mip 生成都会踩），16F 才是 Vulkan 保证可过滤的格式；另外 `Texture::load_file` 的调试检查只接受 4 字节浮点分量，所以 HDR 自己解、自己压。
+- 嵌入式 DDS（assimp 的 `*<index>`）走同一条解码路径；加载日志新增 `dds=` / `hdr=` 计数，便于核对。
+- 当前边界：贴图仍按 **UNORM** 上传（不做 sRGB 转换，与 glTF 路径一致）；BC4/BC5 缺失通道按灰度 / 补 0 处理（它们是法线图，暂不参与着色）；normal map / IBL / PBR 未接入；glTF（tinygltf 自己解图）里的 DDS/HDR 仍不支持——本阶段覆盖的是 assimp 路径（Bistro 等 ORCA 资产）。
+
+**验证（RTX 5090 D，Debug 构建，1920×1061）**
+
+| 资产 | 加载结果 | 说明 |
+| --- | --- | --- |
+| `BistroExterior.fbx` | mesh=132、texture=132、**dds=132**、skipped=0 | 接入前是 texture=0 / skipped=132 |
+| `BistroInterior.fbx` | mesh=71、texture=71、**dds=71**、skipped=0 | |
+| `BistroInterior_Wine.fbx` | mesh=75、texture=68、**dds=68**、skipped=0 | 74 个材质里 6 个没有 base color 贴图 |
+| `out/verify/hdr-test/quad.obj`（合成 64×64 flat HDR + OBJ/MTL） | texture=1、**hdr=1**、skipped=0 | HDR 端到端：解码 → 16F 上传 → 采样 |
+
+- 全部 exit 0、**零 VUID**、无 leaked objects；`FrameGraphTests` 129 checks / 0 failures；
+- 回归 smoke：`box.fbx` / `spider.obj`（jpg 贴图）/ `cube_uv.ply` / `Sponza.gltf` 全部 exit 0；
+- 目视确认（截屏不入库）：`out/verify/bistro-exterior-dds-textured.png`（DDS 生效，建筑有真实颜色）、`out/verify/hdr-quad-render.png`（HDR 亮度梯度正确）；
+- 带贴图的 300 帧复测（`out/benchmark/bistro-exterior-dds-summary.csv`，warmup 60，未锁频）：CPU p50 1.052 / p95 1.337 / p99 1.522 ms，GPU p50 0.139 / p95 0.189 / p99 0.348 ms；加载耗时从 ~19 s 增到 ~26 s（含 132 张 BCn 解码 + mip 生成）。
+
+**下一阶段（下一步）**：先补 **PBR shading**（base color + metallic/roughness + 法线贴图 + IBL；DDS 里的 BC5 法线图已经能读出来了），有了真实着色负载再重新采集 Bistro 基线；之后才是把 draw call 数拉起来 → GPU-driven（bindless + indirect）对照。
 **边界与风险**：assimp 对 FBX 的部分高级特性（NURBS、部分动画/约束）支持有限——本项目只做**静态几何**，不受影响；assimp 不负责贴图解码（DDS 问题依旧存在）；D 盘剩余空间有限（见 §14.1.1 的资产体积说明）。
 ## 15. NVIDIA Profile 采集清单（Nsight Graphics / Nsight Systems）
 
