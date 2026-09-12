@@ -65,7 +65,11 @@ const std::filesystem::path G_PROJECT_ROOT = PROJECT_ROOT_PATH;
 #endif
 
 // 封装Vulkan相关类的一些函数
-#define DestroyHandleBy(device,Func) if (handle) { Func(device, handle, nullptr); handle = VK_NULL_HANDLE; }
+// 设备销毁后，其子对象已由 vkDestroyDevice 隐式释放：此时再调用 vkDestroy* 不只是多余，
+// 还会因为设备句柄已被置空而触发 "vkDestroyXxx: Invalid device"（validation 层会直接崩，
+// 进程以 0xC0000409 退出）。进程级 static 对象（例如 demo 里的 shader module）与单例的
+// 析构都可能晚于设备销毁，所以设备句柄为空时只清句柄，不再调用 Vulkan。
+#define DestroyHandleBy(device,Func) if (handle) { auto destroy_device_handle = (device); if (destroy_device_handle) Func(destroy_device_handle, handle, nullptr); handle = VK_NULL_HANDLE; }
 #define MoveHandle handle = other.handle; other.handle = VK_NULL_HANDLE;
 #define DefineMoveAssignmentOperator(type) type& operator=(type&& other) { this->~type(); MoveHandle; return *this; }
 #define DefineHandleTypeOperator operator decltype(handle)() const { return handle; }

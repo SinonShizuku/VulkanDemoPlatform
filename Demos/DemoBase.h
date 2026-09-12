@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "../Start.h"
 #include "../VulkanBase/VulkanCore.h"
 #include "../VulkanBase/VulkanSwapchainManager.h"
@@ -17,7 +18,11 @@ public:
     DemoBase(DemoType type, DemoCategoryType category,  const std::string& description = "")
            : scene_type(type), scene_category(category),  scene_description(description) {}
 
-    virtual ~DemoBase() = default;
+    virtual ~DemoBase() {
+        // demo 创建 pipeline / framebuffer 时会在 VulkanSwapchainManager 上注册回调（捕获 this）。
+        // 这些回调必须在 demo 析构时注销，否则 swapchain 重建或退出时回调会访问已析构的 demo。
+        VulkanSwapchainManager::get_singleton().remove_swapchain_callbacks(this);
+    }
 
     // Virtual functions
     virtual bool initialize_scene_resources() = 0;
@@ -54,8 +59,18 @@ public:
     // Setter
     void set_window(GLFWwindow *window) { this->window = window; }
 
+    // 以 demo 自己为 owner 注册 swapchain 回调：demo 析构时会由 ~DemoBase() 统一注销。
+    void add_swapchain_create_callback(std::function<void()> callback) {
+        VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(std::move(callback), this);
+    }
+
+    void add_swapchain_destroy_callback(std::function<void()> callback) {
+        VulkanSwapchainManager::get_singleton().add_callback_destroy_swapchain(std::move(callback), this);
+    }
+
 protected:
-    GLFWwindow *window;
+    // 默认 demo 由 make_unique 直接构造（没有走工厂的 set_window），这里给一个确定的初值。
+    GLFWwindow *window = nullptr;
     DemoType scene_type;
     DemoCategoryType scene_category;
     std::string scene_description;

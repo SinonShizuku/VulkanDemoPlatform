@@ -124,7 +124,7 @@ public:
             };
             descriptor_set_composition->write(image_infos, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,0);
         };
-        VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(update_descriptor_set_input_attachments);
+        add_swapchain_create_callback(update_descriptor_set_input_attachments);
         update_descriptor_set_input_attachments();
 
         return true;
@@ -233,14 +233,14 @@ private:
     }
 
     bool create_pipeline() {
-        static VulkanShaderModule vert_gbuffer(get_shader_path("VulkanTests/GBuffer.vert.spv").string().c_str());
-        static VulkanShaderModule frag_gbuffer(get_shader_path("VulkanTests/GBuffer.frag.spv").string().c_str());
+        VulkanShaderModule vert_gbuffer(get_shader_path("VulkanTests/GBuffer.vert.spv").string().c_str());
+        VulkanShaderModule frag_gbuffer(get_shader_path("VulkanTests/GBuffer.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_gbuffer[2] = {
             vert_gbuffer.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_gbuffer.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
         };
-        static VulkanShaderModule vert_composition(get_shader_path("VulkanTests/Composition.vert.spv").string().c_str());
-        static VulkanShaderModule frag_composition(get_shader_path("VulkanTests/Composition.frag.spv").string().c_str());
+        VulkanShaderModule vert_composition(get_shader_path("VulkanTests/Composition.vert.spv").string().c_str());
+        VulkanShaderModule frag_composition(get_shader_path("VulkanTests/Composition.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_composition[2] = {
             vert_composition.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_composition.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -309,8 +309,8 @@ private:
             pipeline.~VulkanPipeline();
             pipeline_gbuffer.~VulkanPipeline();
         };
-        VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(create);
-        VulkanSwapchainManager::get_singleton().add_callback_destroy_swapchain(destroy);
+        add_swapchain_create_callback(create);
+        add_swapchain_destroy_callback(destroy);
         return create();
     }
 

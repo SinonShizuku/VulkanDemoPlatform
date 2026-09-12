@@ -212,6 +212,11 @@ void VulkanAppLauncher::cleanup() {
 }
 
 void VulkanAppLauncher::terminate_window() {
+    // 释放顺序：所有持有 VkDevice 子对象的对象（当前 demo、ImGui、共享同步对象与命令池/描述符池）
+    // 必须在 VulkanCore::destroy_singleton() 之前释放。它们的析构会调用 vkDestroy*，而设备销毁后
+    // device 句柄已被置空，会触发 "vkDestroyXxx: Invalid device" 并让进程以 0xC0000409 退出。
+    DemoManager::get_singleton().shutdown();
+    SharedResourceManager::get_singleton().shutdown();
     cleanup();
     glfwTerminate();
 }
@@ -273,13 +278,13 @@ void VulkanAppLauncher::create_pipeline_layout_with_texture() {
 }
 
 void VulkanAppLauncher::create_pipeline() {
-    static VulkanShaderModule vert("Shader/Texture.vert.spv");
-    static VulkanShaderModule frag("Shader/Texture.frag.spv");
+    VulkanShaderModule vert("Shader/Texture.vert.spv");
+    VulkanShaderModule frag("Shader/Texture.frag.spv");
     // static VkPipelineShaderStageCreateInfo shader_stage_create_infos_triangle[2] = {
     //     vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
     //     frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
     // };
-    static VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
+    VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
         vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
         frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
     };

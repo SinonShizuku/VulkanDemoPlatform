@@ -164,8 +164,8 @@ private:
     }
 
     bool create_pipeline_offscreen() {
-        static VulkanShaderModule vert_offscreen(get_shader_path("VulkanTests/Line.vert.spv").string().c_str());
-        static VulkanShaderModule frag_offscreen(get_shader_path("VulkanTests/Line.frag.spv").string().c_str());
+        VulkanShaderModule vert_offscreen(get_shader_path("VulkanTests/Line.vert.spv").string().c_str());
+        VulkanShaderModule frag_offscreen(get_shader_path("VulkanTests/Line.frag.spv").string().c_str());
         VkPipelineShaderStageCreateInfo shader_stage_create_info[2] = {
             vert_offscreen.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag_offscreen.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -186,8 +186,8 @@ private:
     }
 
     bool create_pipeline() {
-        static VulkanShaderModule vert(get_shader_path("VulkanTests/CanvasToScreen.vert.spv").string().c_str());
-        static VulkanShaderModule frag(get_shader_path("VulkanTests/CanvasToScreen.frag.spv").string().c_str());
+        VulkanShaderModule vert(get_shader_path("VulkanTests/CanvasToScreen.vert.spv").string().c_str());
+        VulkanShaderModule frag(get_shader_path("VulkanTests/CanvasToScreen.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_screen[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -213,8 +213,8 @@ private:
             if (current_demo_name != "OffScreenRenderingTest") return;
             pipeline.~VulkanPipeline();
         };
-        VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(create);
-        VulkanSwapchainManager::get_singleton().add_callback_destroy_swapchain(destroy);
+        add_swapchain_create_callback(create);
+        add_swapchain_destroy_callback(destroy);
         return create();
     }
 

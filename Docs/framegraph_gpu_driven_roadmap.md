@@ -2,7 +2,7 @@
 
 > 文档状态：设计基线、实施路线与已验证进度
 > 建立日期：2026-09-11
-> 最近更新：2026-09-11
+> 最近更新：2026-09-12
 > 项目路径：`D:/VulkanDemoPlatform`（当前工作副本；早期记录的 `D:/myself/GraphicLearning/Graphic_api/VulkanRenderer` 已不是本机工作目录）
 > 上游基础：https://github.com/SaschaWillems/Vulkan
 > Canonical repository：https://github.com/SinonShizuku/VulkanDemoPlatform
@@ -81,7 +81,7 @@ out/build/windows-ninja-release
 
 ### 2.1.1 构建系统的一个坑（已修）
 
-本地化（代码页 936）的 MSVC 输出会让 CMake/Ninja 的 dyndep 解析不到头文件依赖，表现为「只改头文件不重编译」，从而验证到旧二进制甚至定位错问题。`scripts/build.ps1` 现在显式设置 `$env:VSLANG = "1033"`；用本地化前缀配置过的构建目录需要删除后重新配置才会生效。
+本地化（代码页 936）的 MSVC 输出会让 CMake/Ninja 的 dyndep 解析不到头文件依赖，表现为「只改头文件不重编译」，从而验证到旧二进制甚至定位错问题。**更正（2026-09-12）**：此前记录的 `$env:VSLANG = "1033"` 方案在本机**无效**——本机只安装了 2052（简体中文）语言资源，`cl.exe /showIncludes` 无论 VSLANG 如何都输出中文；而 CMake 按系统 ANSI 代码页解码 cl 的 **UTF-8** 输出，探测出的 `msvc_deps_prefix` 成了乱码，Ninja 永远匹配不上，头文件依赖数为 0（`ninja -t deps` 实测 `#deps 0`，改动 `.h` 不触发任何重编译）。现在 `CMakeLists.txt` 在配置期自己做一次探测：编译一个最小 TU，按 UTF-8 读取 `cl` 的输出并剥掉头文件路径得到真实前缀，与 CMake 的探测结果不一致时才覆盖 `CMAKE_CL_SHOWINCLUDES_PREFIX`（英文环境两者一致，不受影响），配置时会打印 `MSVC /showIncludes prefix repaired: ...`。验证：对 `FrameGraphExecutor.cpp.obj` 记录到 178 个依赖；touch 一个被广泛包含的头文件会重编译对应 TU；紧接着的无改动构建编译 0 个文件。
 
 另一个相关坑：应用 target 此前没有指定源码编码，MSVC 按本地代码页（936）解析 UTF-8 源码，个别多字节序列会“吞掉”后续代码（表现为莫名其妙的语法错误）并产生大量 `C4819`。现在 `VulkanRenderer` 也编译为 `/utf-8`（`FrameGraphCore` / 测试同样如此），构建 0 warning、中文注释不再影响语法。
 
@@ -204,7 +204,7 @@ P0 已修复：
 7. 没有 transient resource 和 memory aliasing；
 8. 没有统一的 GPU pass timing；
 9. 没有 benchmark / correctness 基础设施；
-10. 已有 Validation 错误：只剩 ImGui render pass 的 `LOAD` + `UNDEFINED` initialLayout（以及一条来自其它 demo 手写 pipeline 的 `lineWidth=0` 告警）。pipeline `lineWidth=0` 在 `602816f` 修复；render-finished semaphore 跨 swapchain image 复用已在本次修复（每张 image 一个 semaphore）并实跑确认消失；
+10. 已有 Validation 错误：**默认路径已清零（2026-09-12，见 §5.8）**。ImGui render pass 的 `LOAD` + `UNDEFINED` initialLayout（VUID-VkAttachmentDescription-format-06699）已改为 `PRESENT_SRC_KHR`；退出时的 `vkDestroyShaderModule: Invalid device` / `0xC0000409`、`vkFreeDescriptorSets` 缺 `FREE_DESCRIPTOR_SET_BIT`、57 个 leaked objects、以及 demo 的悬垂 swapchain 回调均已修复。默认路径连跑 5 次：exit code 0、stdout 无 VUID、stderr 为空。**图路径仍未清零**：`glTFLoading` 作为启动 demo 时稳定复现 presentable image acquire 相关错误（见 §5.8）。
 11. PBR/IBL 目前不能作为已完成能力对外陈述。
 
 ### 2.7 简历事实边界
@@ -587,6 +587,34 @@ Demo 行为（`FrameGraphOffScreenTest`）：
 - BasicRendering 迁移进行中，且前置阻塞已定位：executor 的 render target 能力已就位；`glTFLoading` 的迁移尝试在真实运行中初始化失败，随后用**未修改的** `glTFLoading` 复测同样失败（进程退出码 `0xC0000409`，后台隐藏窗口运行偶尔能进入帧循环），说明这是**既有问题、与 FrameGraph 迁移无关**。迁移该 demo 之前需要先定位这个既有崩溃，因此本轮已回退 demo 改动、master 保持可用。
 - 下一步顺序：① 定位 `glTFLoading` 既有初始化失败；② 用 executor 迁移 glTF（图持有 depth、render target 由 executor 提供）；③ 迁移 `ShadowMapping`（阴影 pass + 手写 barrier + SAT compute 系列 + 屏幕 pass），需要先在 executor 上补 compute/storage image 支持。
 
+### 5.8 退出路径与验证可信化（2026-09-12）
+
+本轮不加功能，目标是把「验证结果可信」补齐：先修构建依赖，再修退出路径，最后让默认路径的 validation 归零。本地分支 `codex/validation-cleanup`。
+
+已修复（均实跑验证）：
+
+- **Ninja 头文件依赖失效**：`msvc_deps_prefix` 是乱码，Ninja 记录不到任何头文件依赖（`#deps 0`），改 `.h` 不重编译；已在 `CMakeLists.txt` 配置期自行探测真实前缀并覆盖（详见 §2.1.1）。
+- **退出崩溃（`0xC0000409`，崩溃点就在 validation 层内）**：根因是一条生命周期链——`VulkanAppLauncher::cleanup()` 先销毁 `VkDevice`，而 demo、ImGui、共享同步对象、`VulkanPipelineManager` 的附件都晚于设备析构，析构里调用 `vkDestroy*` 时设备句柄已被置空。修复：① `terminate_window()` 按 demo → ImGui → 共享资源 → rpwf/swapchain → device 的顺序显式释放；② `DestroyHandleBy` 在设备句柄为空时只清句柄、不再调用 Vulkan；③ `VulkanRenderPass` / `VulkanFramebuffer` 补上真正的析构（此前为空析构，`vector::clear()` 会漏掉 framebuffer）；④ demo 的 shader module 不再是函数内 `static`（进程级生命周期的设备子对象必然晚于设备析构）。
+- **demo 的 swapchain 回调悬垂**：demo 注册的回调捕获 `this`，demo 销毁后回调仍留在 `VulkanSwapchainManager` 中，退出或重建 swapchain 时会访问已释放的 demo（实测：在 `~VulkanPipeline()` 里读到 debug 堆填充值 `0xdddddddddddddddd` 并据此调用 `vkDestroyPipeline`）。现在回调带 owner，`~DemoBase()` 统一注销。
+- **ImGui render pass 非法组合**：`LOAD` + `initialLayout = UNDEFINED`（VUID-VkAttachmentDescription-format-06699）改为 `PRESENT_SRC_KHR`——ImGui 通道总是紧跟在把同一张 swapchain 图像写成 `PRESENT_SRC_KHR` 的屏幕通道之后。
+- **ImGui descriptor pool 缺 flag**：`ImGui_ImplVulkan_Shutdown()` 会 `vkFreeDescriptorSets()`，池必须带 `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`（VUID-vkFreeDescriptorSets-descriptorPool-00312）。
+- **glTFLoading 初始化失败（§10 P1 遗留项 ①）**：根因不是 glTF 资源，而是 demo 用全局 `current_demo_name` 当闸门，而该变量只在「菜单切换」路径被更新；默认 demo / 工厂路径下它仍停在 `BuffersAndPictureTest`，于是 `create_pipeline()` 直接 `return false`，表现为 `Failed to switch to default demo!`。修复：`switch_to_demo()` 统一按 `current_demo->get_type()` 同步该全局，并把 `glTFLoading` 的两处闸门由菜单标签改为自己的 type。
+
+验证（2026-09-12，RTX 5090 D）：
+
+- 默认路径 `BuffersAndPictureTest`：连跑 5 次，exit code 0、stdout 无任何 VUID、stderr 为空、60 FPS；
+- `FrameGraphOffScreenTest` 作为启动 demo：exit code 0、validation 无输出、60 FPS；
+- `glTFLoading` 作为启动 demo（临时改动，仅用于验证）：现在能初始化并跑满 60 FPS（修复前直接 `Failed to switch to default demo!`）；
+- `FrameGraphTests.exe`：123 checks / 0 failures。
+
+仍未解决（下一步）：
+
+- **图路径的 acquire/present 记账**：把 `glTFLoading` 作为启动 demo 后 validation 稳定复现两类错误——`performs a layout transition on presentable VkImage ... but the image has not been acquired`，以及 `command buffer expects VkImage ... PRESENT_SRC_KHR, current layout is UNDEFINED`。这与 §5.7 记录的「ShadowMapping 迁移回退」是同一根因：图路径把 swapchain image 当外部同步资源交给 render pass 转换，但 acquire/present 的窗口记账尚未对齐。下一步应把 acquire/present 做成图上的显式 pass（或在 executor 里统一记账），再继续 ShadowMapping / Deferred 迁移。
+- 除默认 demo 外，其余 demo（ShadowMapping / Deferred / 其余 VulkanTests）本轮未逐个做 validation 验收。
+
+
+---
+
 ## 6. Synchronization 与 FrameContext 设计
 
 ### 6.1 当前模式
@@ -896,7 +924,7 @@ CSV / JSON 至少包含：
 验收：
 
 - 视觉结果一致；——未满足（Demo 尚未迁移）
-- validation 零错误；——未满足：executor 已在设备上跑起来，剩余错误集中在 ImGui render pass 的既有非法组合与 swapchain 同步（presentable image acquire / semaphore 复用）
+- validation 零错误；——**默认路径已满足**（2026-09-12 连跑 5 次无 VUID，见 §5.8）；图路径（`glTFLoading`）仍有一条 presentable image acquire 相关错误待修
 - 输出 barrier 统计；——已满足（`BarrierStats`）
 - 输出 graph dump；——已满足（`dump()`，含每个 barrier 的 reason / stage / access）
 - 有 graph 单元测试；——已满足（18 个用例 / 123 项断言，device-free）
@@ -1023,8 +1051,8 @@ CSV / JSON 至少包含：
 2. ~~决定 WIP 的归档策略~~：构建期着色器编译改动已归档到 `codex/build-shader-pipeline`（`554efb5`）；
 3. ~~开始 FrameGraph v1~~：图编译、依赖、生命周期、barrier 规划与单元测试已完成（见 §5.6）；
 4. ~~实现 FrameGraph executor~~：已完成（真实资源分配、barrier 录制、pass 执行、render target 生成）；已接入 `FrameGraphOffScreenTest` 与 `glTFLoading`；
-5. 修 swapchain 同步（validation 归零的关键）：每张 swapchain image 一个 render-finished semaphore（或 `VK_EXT_swapchain_maintenance1` + fence），并处理 ImGui render pass 的非法 initialLayout 组合；
-6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；
+~~修 swapchain 同步~~：每张 swapchain image 一个 render-finished semaphore、`SUBOPTIMAL` 视为本帧可用、ImGui render pass 非法 initialLayout 组合均已在 `codex/validation-cleanup` 修掉，默认路径 validation 已归零（见 §5.8）；**剩余**：图路径的 acquire/present 记账（把 acquire/present 做成图上的显式 pass）；
+6. 迁移 ShadowMapping（图拥有 shadow map、SAT 走 compute pass、删掉手写 barrier）与 Deferred，并以 Validation 结果作为验收；——前置条件已就绪：退出路径不再崩溃、默认路径 validation 归零、demo 回调与设备子对象生命周期已修正；
 7. 升级 frames in flight，解决 semaphore 跨 swapchain image 复用问题；
 8. 再加入 GPU-driven；
 9. 最后在 RTX 机器上加入光追；

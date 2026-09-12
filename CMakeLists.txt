@@ -10,6 +10,56 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
+# ---------------------------------------------------------------------------
+# MSVC /showIncludes 前缀修复（Ninja 的头文件依赖依赖它）
+#
+# Ninja 用 rules.ninja 里的 msvc_deps_prefix 从 cl.exe /showIncludes 输出中剥掉本地化前缀。
+# CMake 在配置期探测该前缀时按系统 ANSI 代码页解码 cl 的输出，而当前 MSVC 直接输出 UTF-8，
+# 于是在非 ASCII locale（例如中文 Windows）下探测结果会变成乱码，与 cl.exe 的真实输出不匹配：
+# Ninja 解析不到任何头文件依赖，改动 .h 不会触发重编译——“改了头文件却没重编”会让构建产物
+# 与源码不一致，验证结果不可信。
+#
+# 这里在配置期自己做一次探测：编译一个只 include 一个头文件的最小 TU，按 UTF-8 直接读取
+# cl.exe 的输出并取出真实前缀；只有与 CMake 的探测结果不一致时才覆盖（英文环境下两者相同，
+# 不受影响）。探测失败时保持 CMake 的原有行为。
+# ---------------------------------------------------------------------------
+if(MSVC AND CMAKE_CXX_COMPILER)
+    set(_vkr_showincludes_dir "${CMAKE_BINARY_DIR}/CMakeFiles/showincludes-prefix-probe")
+    file(MAKE_DIRECTORY "${_vkr_showincludes_dir}")
+    file(WRITE "${_vkr_showincludes_dir}/probe.h" "#pragma once\n")
+    file(WRITE "${_vkr_showincludes_dir}/probe.cpp" "#include \"probe.h\"\n")
+    file(TO_NATIVE_PATH "${_vkr_showincludes_dir}/probe.cpp" _vkr_showincludes_source)
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /c /showIncludes "${_vkr_showincludes_source}"
+        WORKING_DIRECTORY "${_vkr_showincludes_dir}"
+        OUTPUT_FILE "${_vkr_showincludes_dir}/probe.out"
+        ERROR_QUIET
+        RESULT_VARIABLE _vkr_showincludes_result)
+
+    set(_vkr_showincludes_prefix "")
+    if(_vkr_showincludes_result EQUAL 0)
+        file(READ "${_vkr_showincludes_dir}/probe.out" _vkr_showincludes_output)
+        string(REGEX MATCH "[^\r\n]*probe\\.h" _vkr_showincludes_line "${_vkr_showincludes_output}")
+        file(TO_NATIVE_PATH "${_vkr_showincludes_dir}/probe.h" _vkr_showincludes_header)
+        string(LENGTH "${_vkr_showincludes_line}" _vkr_line_length)
+        string(LENGTH "${_vkr_showincludes_header}" _vkr_header_length)
+        # 该行形如 <前缀><probe.h 的绝对路径>，把路径剥掉剩下的就是前缀本身。
+        string(FIND "${_vkr_showincludes_line}" "${_vkr_showincludes_header}" _vkr_header_pos)
+        math(EXPR _vkr_prefix_length "${_vkr_line_length} - ${_vkr_header_length}")
+        if(_vkr_header_pos GREATER 0 AND _vkr_header_pos EQUAL ${_vkr_prefix_length})
+            string(SUBSTRING "${_vkr_showincludes_line}" 0 ${_vkr_header_pos} _vkr_showincludes_prefix)
+        endif()
+    endif()
+
+    if(_vkr_showincludes_prefix AND
+       NOT _vkr_showincludes_prefix STREQUAL CMAKE_CL_SHOWINCLUDES_PREFIX)
+        message(STATUS "MSVC /showIncludes prefix repaired: \"${_vkr_showincludes_prefix}\" (CMake detected: \"${CMAKE_CL_SHOWINCLUDES_PREFIX}\")")
+        set(CMAKE_CL_SHOWINCLUDES_PREFIX "${_vkr_showincludes_prefix}")
+        set(CMAKE_C_CL_SHOWINCLUDES_PREFIX "${_vkr_showincludes_prefix}")
+        set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "${_vkr_showincludes_prefix}")
+    endif()
+endif()
+
 set(VULKAN_RENDERER_EXTERNAL_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/External"
     CACHE PATH "Directory containing the pinned VulkanRenderer dependencies")

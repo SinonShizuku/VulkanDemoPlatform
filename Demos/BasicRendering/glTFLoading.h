@@ -166,14 +166,14 @@ private:
     }
 
     bool create_pipeline() {
-        static VulkanShaderModule vert(get_shader_path("BasicRendering/gltfLoading/gltfLoading.vert.spv").string().c_str());
-        static VulkanShaderModule frag(get_shader_path("BasicRendering/gltfLoading/gltfLoading.frag.spv").string().c_str());
+        VulkanShaderModule vert(get_shader_path("BasicRendering/gltfLoading/gltfLoading.vert.spv").string().c_str());
+        VulkanShaderModule frag(get_shader_path("BasicRendering/gltfLoading/gltfLoading.frag.spv").string().c_str());
         static VkPipelineShaderStageCreateInfo shader_stage_create_infos_texture[2] = {
             vert.stage_create_info(VK_SHADER_STAGE_VERTEX_BIT),
             frag.stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT)
         };
         auto create = [&] {
-            if (current_demo_name != "Loading & Rendering glTF Model") return false;
+            if (current_demo_name != get_type()) return false;
             GraphicsPipelineCreateInfoPack pipeline_create_info_pack;
             pipeline_create_info_pack.create_info.layout = pipeline_layout;
             pipeline_create_info_pack.create_info.renderPass = VulkanPipelineManager::get_singleton().get_rpwf_ds().render_pass;
@@ -210,11 +210,11 @@ private:
             return true;
         };
         auto destroy = [this] {
-            if (current_demo_name != "Loading & Rendering glTF Model") return;
+            if (current_demo_name != get_type()) return;
             pipeline.~VulkanPipeline();
         };
-        VulkanSwapchainManager::get_singleton().add_callback_create_swapchain(create);
-        VulkanSwapchainManager::get_singleton().add_callback_destroy_swapchain(destroy);
+        add_swapchain_create_callback(create);
+        add_swapchain_destroy_callback(destroy);
         return create();
     }
 

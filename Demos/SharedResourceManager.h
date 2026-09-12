@@ -29,6 +29,18 @@ public:
         return initialize_imgui_resources();
     }
 
+    // 退出前的显式释放，必须在销毁 VkDevice 之前调用：这些对象都在析构里调用 vkDestroy*，
+    // 晚于设备销毁就会变成 "vkDestroyXxx: Invalid device"。顺序：先 descriptor pool /
+    // 命令池（其子对象已由 demo 与 ImGui 释放），再是信号量与 fence。
+    void shutdown() {
+        imgui_descriptor_pool.reset();
+        command_pool.reset();
+        semaphore_rendering_is_over.reset();
+        semaphore_image_is_available.reset();
+        shared_fence.reset();
+        window = nullptr;
+    }
+
     // Getter
     fence& get_shared_fence() { return *shared_fence; }
     semaphore& get_semaphore_image_is_available() { return *semaphore_image_is_available; }
@@ -91,9 +103,13 @@ private:
             { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
         };
 
+        // ImGui_ImplVulkan_Shutdown() 会 vkFreeDescriptorSets() 释放它自己的 set，
+        // 因此池必须带 VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+        //（否则 validation 报 VUID-vkFreeDescriptorSets-descriptorPool-00312）。
         imgui_descriptor_pool = std::make_unique<VulkanDescriptorPool>(
             1000 * IM_ARRAYSIZE(imgui_pool_sizes),
-            imgui_pool_sizes
+            imgui_pool_sizes,
+            VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
         );
         return true;
     }

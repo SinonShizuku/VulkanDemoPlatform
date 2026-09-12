@@ -6,6 +6,13 @@
 
 class VulkanSwapchainManager {
 public:
+    // swapchain 回调带 owner：注册者（例如某个 demo）在销毁前必须调用
+    // remove_swapchain_callbacks(owner) 注销，否则回调会在 swapchain 重建/退出时访问已析构的对象。
+    struct SwapchainCallback {
+        const void* owner = nullptr;
+        std::function<void()> function;
+    };
+
     VulkanSwapchainManager() {
         vulkan_device = &VulkanCore::get_singleton().get_vulkan_device();
         vulkan_surface = &VulkanCore::get_singleton().get_vulkan_instance().get_surface();
@@ -17,7 +24,7 @@ public:
         wait_idle();
         if (swapchain) {
             for (auto& i : callbacks_destroy_swapchain)
-                i();
+                i.function();
             for (auto& i : swapchain_image_views)
                 if (i)
                     vkDestroyImageView(vulkan_device->get_device(), i, nullptr);
@@ -77,11 +84,11 @@ public:
         return swapchain_create_info;
     }
 
-    [[nodiscard]] std::vector<std::function<void()>> & get_callbacks_create_swapchain() {
+    [[nodiscard]] std::vector<SwapchainCallback> & get_callbacks_create_swapchain() {
         return callbacks_create_swapchain;
     }
 
-    [[nodiscard]] std::vector<std::function<void()>> & get_callbacks_destroy_swapchain() {
+    [[nodiscard]] std::vector<SwapchainCallback> & get_callbacks_destroy_swapchain() {
         return callbacks_destroy_swapchain;
     }
 
@@ -102,12 +109,21 @@ public:
         this->swapchain = swapchain;
     }
 
-    void add_callback_create_swapchain(std::function<void()> function) {
-        callbacks_create_swapchain.push_back(std::move(function));
+    void add_callback_create_swapchain(std::function<void()> function, const void* owner = nullptr) {
+        callbacks_create_swapchain.push_back({ owner, std::move(function) });
     }
 
-    void add_callback_destroy_swapchain(std::function<void()> function) {
-        callbacks_destroy_swapchain.push_back(std::move(function));
+    void add_callback_destroy_swapchain(std::function<void()> function, const void* owner = nullptr) {
+        callbacks_destroy_swapchain.push_back({ owner, std::move(function) });
+    }
+
+    // 注销 owner 注册的全部 swapchain 回调。
+    void remove_swapchain_callbacks(const void* owner) {
+        auto remove_owner = [owner](std::vector<SwapchainCallback>& callbacks) {
+            std::erase_if(callbacks, [owner](const SwapchainCallback& callback) { return callback.owner == owner; });
+        };
+        remove_owner(callbacks_create_swapchain);
+        remove_owner(callbacks_destroy_swapchain);
     }
     
     void clear_all_callbacks() {
@@ -244,8 +260,8 @@ public:
         if (result_t result = create_swapchain_internal())
             return result;
 
-        for (auto&i:callbacks_create_swapchain)
-            i();
+        for (auto& i : callbacks_create_swapchain)
+            i.function();
 
         return VK_SUCCESS;
     }
@@ -272,8 +288,8 @@ public:
             return result;
         }
 
-        for (auto&i:callbacks_destroy_swapchain)
-            i();
+        for (auto& i : callbacks_destroy_swapchain)
+            i.function();
         outstream << this->get_swapchain_image_views().size();
 
         // 销毁旧ImageViews
@@ -284,8 +300,8 @@ public:
 
         if (result_t result = create_swapchain_internal())
             return result;
-        for (auto&i:callbacks_create_swapchain)
-            i();
+        for (auto& i : callbacks_create_swapchain)
+            i.function();
         return VK_SUCCESS;
     }
 
@@ -294,8 +310,8 @@ public:
             return result;
         }
         if (swapchain) {
-            for (auto &i: callbacks_destroy_swapchain)
-                i();
+            for (auto& i : callbacks_destroy_swapchain)
+                i.function();
             for (auto &i:swapchain_image_views)
                 if (i) vkDestroyImageView(vulkan_device->get_device(), i, nullptr);
             swapchain_image_views.resize(0);
@@ -362,8 +378,8 @@ private:
     std::vector<semaphore> render_finished_semaphores;
     VkSwapchainCreateInfoKHR swapchain_create_info = {};
 
-    std::vector<std::function<void()>> callbacks_create_swapchain;
-    std::vector<std::function<void()>> callbacks_destroy_swapchain;
+    std::vector<SwapchainCallback> callbacks_create_swapchain;
+    std::vector<SwapchainCallback> callbacks_destroy_swapchain;
 
     uint32_t current_image_index = 0;
     // swapchain 处于 suboptimal：下一帧 acquire 之前重建一次

@@ -10,7 +10,7 @@ public:
         create(create_info);
     }
     VulkanRenderPass(VulkanRenderPass &&other) noexcept {MoveHandle;}
-    ~VulkanRenderPass() {}
+    ~VulkanRenderPass() { DestroyHandleBy(VulkanCore::get_singleton().get_vulkan_device().get_device(), vkDestroyRenderPass); }
     void clear() {DestroyHandleBy(VulkanCore::get_singleton().get_vulkan_device().get_device(),vkDestroyRenderPass);}
 
     // getter
@@ -60,7 +60,7 @@ public:
         create(create_info);
     }
     VulkanFramebuffer(VulkanFramebuffer &&other) {MoveHandle;}
-    ~VulkanFramebuffer() {}
+    ~VulkanFramebuffer() { DestroyHandleBy(VulkanCore::get_singleton().get_vulkan_device().get_device(), vkDestroyFramebuffer); }
     void clear(){ DestroyHandleBy(VulkanCore::get_singleton().get_vulkan_device().get_device(),vkDestroyFramebuffer);}
 
     // getter

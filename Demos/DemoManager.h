@@ -75,7 +75,23 @@ public:
             return false;
         }
         initialize_demos();
-        return initialize_imgui();
+        imgui_initialized = initialize_imgui();
+        return imgui_initialized;
+    }
+
+    // 退出前的显式释放，必须在销毁 VkDevice 之前调用：
+    // 1. 当前 demo：它的 pipeline / shader module / descriptor set / command buffer 都在析构里调用 vkDestroy*；
+    // 2. ImGui：pipeline 由 ImGui_ImplVulkan_Shutdown 释放，且它引用了共享资源的 descriptor pool
+    //    与 rpwf_imgui 的 render pass。
+    void shutdown() {
+        if (current_demo) {
+            current_demo->cleanup_scene_resources();
+            current_demo.reset();
+        }
+        if (imgui_initialized) {
+            shutdown_imgui();
+            imgui_initialized = false;
+        }
     }
 
 
@@ -142,6 +158,10 @@ public:
     }
 
     bool switch_to_demo(std::unique_ptr<DemoBase> new_demo) {
+        if (!new_demo)
+            return false;
+        // 默认 demo 与部分工厂创建的 demo 没有传入窗口，这里统一补上（DemoBase::window 默认 nullptr）。
+        new_demo->set_window(window);
         // 等待GPU完成当前操作
         if (current_demo) {
             // SharedResourceManager::get_singleton().get_shared_fence().wait_and_reset();
@@ -149,6 +169,10 @@ public:
         }
 
         if (current_demo = std::move(new_demo)) {
+            // 各 demo 的 pipeline 回调用 current_demo_name 判断「现在是不是当前 demo」。之前只有走菜单
+            // 切换才会更新它（默认 demo 与工厂路径都不更新），于是以名字做闸门的 demo（如 glTFLoading）
+            // 在非菜单路径下初始化失败。这里统一按 demo 类型同步。
+            current_demo_name = current_demo->get_type();
             return current_demo->initialize_scene_resources();
         }
 
@@ -220,6 +244,7 @@ public:
 private:
     GLFWwindow* window = nullptr;
     std::unique_ptr<DemoBase> current_demo;
+    bool imgui_initialized = false;
     std::unordered_map<DemoType, std::function<std::unique_ptr<DemoBase>()>> implemented_demos;
 
     bool pending_demo_switch = false;

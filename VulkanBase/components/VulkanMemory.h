@@ -707,6 +707,15 @@ protected:
     VulkanImageMemory image_memory;
     VulkanAttachment() = default;
 public:
+    // 显式释放附件占用的 image / view / memory。
+    // VulkanPipelineManager 里的附件是单例成员，它们的析构发生在 VkDevice 销毁之后；
+    // 若不在销毁设备之前调用 release()，这些资源会被 validation 记为 "leaked objects"。
+    // 重复调用安全：内部句柄在释放后都已被置空。
+    void release() {
+        image_view.~VulkanImageView();
+        image_memory.~VulkanImageMemory();
+    }
+
     // getter
     VkImageView get_image_view() const {
         return image_view;

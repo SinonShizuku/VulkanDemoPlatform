@@ -146,12 +146,15 @@ public:
     }
 
     const auto& create_rpwf_imgui() {
+        // loadOp = LOAD 时 initialLayout 不能是 UNDEFINED（VUID-VkAttachmentDescription-format-06699）：
+        // ImGui 通道总是跟在把同一张 swapchain 图像写成 PRESENT_SRC_KHR 的屏幕通道之后，
+        // 因此这里声明的初始布局就是 PRESENT_SRC_KHR。
         VkAttachmentDescription attachment_description = {
             .format = VulkanSwapchainManager::get_singleton().get_swapchain_create_info().imageFormat,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
         };
         VkAttachmentReference attachment_reference = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
@@ -727,6 +730,14 @@ public:
         clear_rpwf_ds();
         clear_rpwf_deferred_to_screen();
         clear_rpwf_offcreen_ds();
+        // 附件（image / view / memory）不归上面的 clear 管：它们析构于单例销毁时（VkDevice 之后），
+        // 必须在销毁设备前显式释放，否则 validation 会报告这些对象泄漏。
+        ca_canvas.release();
+        ca_offscreen_vsm.release();
+        dsa_offscreen.release();
+        ca_deferred_to_screen_normalZ.release();
+        ca_deferred_to_screen_albedo_specular.release();
+        dsa_deferred_to_screen.release();
     }
 
     void cmd_clear_canvas(VkCommandBuffer command_buffer, VkClearColorValue clear_color_value) {

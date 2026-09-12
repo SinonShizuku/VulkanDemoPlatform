@@ -3,6 +3,9 @@
 #include "../VulkanCore.h"
 #include "../../Shader/ShaderLoader.h"
 
+// 生命周期约束：shader module 必须早于 VkDevice 释放。不要把它声明成函数内 static 或
+// 进程级对象——那会让它在设备销毁之后析构，触发 "vkDestroyShaderModule: Invalid device"
+// 并让进程以 0xC0000409 退出（析构里调用 vkDestroy* 的包装类都适用这条约束）。
 class VulkanShaderModule {
     VkShaderModule handle = VK_NULL_HANDLE;
 public:
