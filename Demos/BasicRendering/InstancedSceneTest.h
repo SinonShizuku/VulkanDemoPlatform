@@ -39,6 +39,9 @@ public:
         pipeline.~VulkanPipeline();
         pipeline_layout.~VulkanPipelineLayout();
         descriptor_set_layout.~VulkanDescriptorSetLayout();
+        // 模型自带的 vertex / index buffer 也要在设备销毁前释放（否则 vkDestroyDevice 报 leaked objects）
+        demo_scene.vertices.~VulkanVertexBuffer();
+        demo_scene.indices.index_buffer.~VulkanIndexBuffer();
         free_command_buffer();
     }
 
