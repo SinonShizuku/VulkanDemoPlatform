@@ -103,6 +103,21 @@ public:
                                                             std::span<const RenderTargetAttachment> attachments,
                                                             std::span<const VkSubpassDependency> dependencies = {});
 
+    // ---------------------------------------------------------- dynamic rendering
+    // 返回可直接喂给 vkCmdBeginRendering 的 VkRenderingInfo：附件 layout 取 pass 声明的 layout
+    //（由图的 barrier 保证图像已经处于该 layout），clear 值由调用方给出。
+    // 返回对象由 executor 持有，每次调用会覆盖上一次的内容（只在同一个 pass 回调里使用）。
+    struct DynamicRenderingTarget {
+        VkRenderingInfo info{};
+        std::vector<VkRenderingAttachmentInfo> color_attachments;
+        VkRenderingAttachmentInfo depth_attachment{};
+        VkExtent2D extent{};
+    };
+    [[nodiscard]] const DynamicRenderingTarget* acquire_rendering_info(
+        const FrameGraph& graph,
+        std::span<const RenderTargetAttachment> attachments,
+        std::span<const VkClearValue> clear_values = {});
+
     [[nodiscard]] const std::string& get_error() const noexcept;
     [[nodiscard]] const Stats& get_stats() const noexcept;
 

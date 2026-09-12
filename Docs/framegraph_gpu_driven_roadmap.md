@@ -1168,4 +1168,10 @@ GPU-driven Rendering（bindless + compute culling + indirect draw）
 3. **管线改用 `VkPipelineRenderingCreateInfo`**：`GraphicsPipelineCreateInfoPack` 增加 dynamic rendering 模式，render pass 兼容性约束（例如 dependencyCount 必须相同）随之消失；
 4. **按难度迁移**：`FrameGraphOffScreenTest` → `glTFLoading` → `ShadowMapping` → 其余 VulkanTests；最后删除 RHI 的 render pass/framebuffer 与 KHR 回退分支，把 `dynamicRendering` 设为硬性要求（本机 RTX 5090 D 已满足）。
 
-状态：**第 1–2 步进行中**（先迁 `glTFLoading` 验收），完成后在此处补验证数据。
+**进度（2026-09-12）**：第 1–2 步已完成并通过 `glTFLoading` 验收。
+
+- executor 新增 `acquire_rendering_info()`（返回 `VkRenderingInfo` + 各附件 `VkRenderingAttachmentInfo`，layout 取 pass 声明的 layout、load/store/clear 由调用方给出），与 `acquire_render_target()` 并存；
+- `glTFLoading` 全链路改用 dynamic rendering：管线用 `VkPipelineRenderingCreateInfo`（不再绑 render pass），pass 内 `vkCmdBeginRendering` / `vkCmdEndRendering`；swapchain 图像**不再外部同步**，由图标出 `UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR`（末尾加了一个空 body 的 `Present` transfer pass，用 `usage::present()`）；
+- 验证（RTX 5090 D）：`glTFLoading` 作启动 demo（临时改动，仅用于验证）**exit code 0、零 VUID、无 leaked objects、stderr 为空、60 FPS**；默认路径 `BuffersAndPictureTest` exit 0 / 零 VUID；`FrameGraphTests` 129 checks / 0 failures。
+
+下一步：`FrameGraphOffScreenTest`（屏幕合成 pass）→ `ShadowMapping`（Shadow + Scene）→ 其余 VulkanTests；随后删除 RHI 的 render pass/framebuffer 与 `VulkanRenderPassWithFramebuffers.h`，把 `dynamicRendering` 设为硬性要求。

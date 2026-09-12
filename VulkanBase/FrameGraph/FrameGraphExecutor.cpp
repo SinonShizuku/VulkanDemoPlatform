@@ -106,6 +106,7 @@ struct FrameGraphExecutor::Impl {
     std::vector<std::unique_ptr<TextureEntry>> textures;
     std::vector<std::unique_ptr<BufferEntry>> buffers;
     std::vector<std::unique_ptr<RenderTargetEntry>> render_targets;
+    DynamicRenderingTarget dynamic_rendering_target;  // 每次 acquire_rendering_info() 覆盖
 
     // 本帧 handle -> 设备资源
     std::vector<TextureEntry*> active_textures;
@@ -626,6 +627,57 @@ void FrameGraphExecutor::execute(FrameGraph& graph, VkCommandBuffer command_buff
             }
         }
     }
+}
+
+const FrameGraphExecutor::DynamicRenderingTarget* FrameGraphExecutor::acquire_rendering_info(
+    const FrameGraph& graph,
+    std::span<const RenderTargetAttachment> attachments,
+    std::span<const VkClearValue> clear_values) {
+    DynamicRenderingTarget& target = impl_->dynamic_rendering_target;
+    target.color_attachments.clear();
+    target.depth_attachment = VkRenderingAttachmentInfo{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    target.extent = VkExtent2D{};
+
+    int32_t depth_index = -1;
+    for (uint32_t index = 0; index < attachments.size(); ++index) {
+        const RenderTargetAttachment& attachment = attachments[index];
+        const VkImageView view = image_view(attachment.resource);
+        if (view == VK_NULL_HANDLE) {
+            impl_->error = std::format("dynamic rendering 附件 {} 没有可用的 VkImageView", index);
+            return nullptr;
+        }
+
+        const auto& resources = graph.get_resources();
+        if (attachment.resource.index < resources.size()) {
+            const TextureDesc& desc = resources[attachment.resource.index].texture;
+            target.extent = VkExtent2D{ desc.extent.width, desc.extent.height };
+        }
+
+        VkRenderingAttachmentInfo info{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+        info.imageView = view;
+        info.imageLayout = attachment.layout;
+        info.loadOp = attachment.load_op;
+        info.storeOp = attachment.store_op;
+        if (index < clear_values.size()) {
+            info.clearValue = clear_values[index];
+        }
+
+        if (attachment.depth_stencil) {
+            info.imageLayout = attachment.layout;
+            target.depth_attachment = info;
+            depth_index = static_cast<int32_t>(index);
+        } else {
+            target.color_attachments.push_back(info);
+        }
+    }
+
+    target.info = VkRenderingInfo{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    target.info.renderArea = VkRect2D{ {}, target.extent };
+    target.info.layerCount = 1;
+    target.info.colorAttachmentCount = static_cast<uint32_t>(target.color_attachments.size());
+    target.info.pColorAttachments = target.color_attachments.empty() ? nullptr : target.color_attachments.data();
+    target.info.pDepthAttachment = depth_index >= 0 ? &target.depth_attachment : nullptr;
+    return &target;
 }
 
 const std::string& FrameGraphExecutor::get_error() const noexcept {

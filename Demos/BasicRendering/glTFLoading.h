@@ -74,7 +74,7 @@ public:
         color_desc.usage = framegraph::ImageUsage::ColorAttachment | framegraph::ImageUsage::Present;
         const framegraph::ResourceHandle color = frame_graph_.import_texture(
             color_desc, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-            /*externally_synchronized=*/true);
+            /*externally_synchronized=*/false);
 
         framegraph::TextureDesc depth_desc;
         depth_desc.name = "Depth";
@@ -87,6 +87,10 @@ public:
             .write(color, framegraph::usage::color_attachment_write())
             .write(depth, framegraph::usage::depth_stencil_write())
             .execute([this, color, depth](framegraph::PassContext& context) { record_scene_pass(context, color, depth); });
+        // 呈现前的最终过渡：由图标出 COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR
+        frame_graph_.add_transfer_pass("Present")
+            .write(color, framegraph::usage::present())
+            .execute([](framegraph::PassContext&) {});
 
         if (!frame_graph_.compile()) {
             outstream << std::format("[ glTFLoading ] compile 失败: {}\n", frame_graph_.get_error());
@@ -176,7 +180,14 @@ private:
             if (current_demo_name != get_type()) return false;
             GraphicsPipelineCreateInfoPack pipeline_create_info_pack;
             pipeline_create_info_pack.create_info.layout = pipeline_layout;
-            pipeline_create_info_pack.create_info.renderPass = VulkanPipelineManager::get_singleton().get_rpwf_ds().render_pass;
+            // dynamic rendering：不再绑定 render pass，改用 VkPipelineRenderingCreateInfo 声明附件格式
+            const VkFormat color_format = VulkanSwapchainManager::get_singleton().get_swapchain_create_info().imageFormat;
+            VkPipelineRenderingCreateInfo rendering_create_info{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+            rendering_create_info.colorAttachmentCount = 1;
+            rendering_create_info.pColorAttachmentFormats = &color_format;
+            rendering_create_info.depthAttachmentFormat = VulkanCore::get_singleton().get_vulkan_device().get_supported_depth_format();
+            pipeline_create_info_pack.create_info.renderPass = VK_NULL_HANDLE;
+            pipeline_create_info_pack.create_info.pNext = &rendering_create_info;
             // 子通道只有一个，pipeline_create_info_pack.createInfo.renderPass使用默认值0
 
             // vertex buffer
@@ -317,29 +328,22 @@ private:
               .stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE,
               .depth_stencil = true },
         };
-        const framegraph::RenderTarget* target = executor_.acquire_render_target(frame_graph_, attachments);
-        if (!target) {
-            outstream << std::format("[ glTFLoading ] 获取 render target 失败: {}\n", executor_.get_error());
-            return;
-        }
-
         VkClearValue clear_values[2] = {
             {.color = { 1.f, 1.f, 1.f, 1.f }},
             {.depthStencil = { 1.f, 0 }}
         };
-        VkRenderPassBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        begin_info.renderPass = target->render_pass;
-        begin_info.framebuffer = target->framebuffer;
-        begin_info.renderArea = VkRect2D{ {}, target->extent };
-        begin_info.clearValueCount = 2;
-        begin_info.pClearValues = clear_values;
+        const framegraph::FrameGraphExecutor::DynamicRenderingTarget* target =
+            executor_.acquire_rendering_info(frame_graph_, attachments, clear_values);
+        if (!target) {
+            outstream << std::format("[ glTFLoading ] 获取 rendering info 失败: {}\n", executor_.get_error());
+            return;
+        }
 
-        vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRendering(cmd, &target->info);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, descriptor_set->Address(), 0, nullptr);
         draw(gltf_model);
-        vkCmdEndRenderPass(cmd);
+        vkCmdEndRendering(cmd);
     }
 
     void draw(VulkanglTFModel &model) {
