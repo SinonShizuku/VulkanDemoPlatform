@@ -210,6 +210,7 @@ add_executable(VulkanRenderer
     VulkanBase/components/VulkanDescriptor.h
     Interaction/Texture.h
     Interaction/DdsImage.h
+    Interaction/HdrImage.h
     bcdec_implementation.cpp
     VulkanBase/VulkanContext.h
     VulkanBase/components/VulkanOperation.h

@@ -75,32 +75,6 @@ public:
         VulkanCommand::get_singleton().execute_command_buffer_graphics(command_buffer);
     }
 
-    // 把整张 cube 过渡到指定 layout（例如 bake pass 里先当渲染目标）。
-    void transition_layout(VkImageLayout old_layout, VkImageLayout new_layout,
-                           VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-        auto& command_buffer = VulkanCommand::get_singleton().get_command_buffer_transfer();
-        command_buffer.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-        VkImageMemoryBarrier2 barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = src_stage,
-            .srcAccessMask = src_access,
-            .dstStageMask = dst_stage,
-            .dstAccessMask = dst_access,
-            .oldLayout = old_layout,
-            .newLayout = new_layout,
-            .image = image_memory.Image(),
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_level_count_, 0, 6 }
-        };
-        VkDependencyInfo dependency = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &barrier
-        };
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-        command_buffer.end();
-        VulkanCommand::get_singleton().execute_command_buffer_graphics(command_buffer);
-    }
 
 private:
     uint32_t size_ = 0;
