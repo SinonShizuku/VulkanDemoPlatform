@@ -216,6 +216,7 @@ add_executable(VulkanRenderer
     stb_image_implementation.cpp
     VulkanBase/components/VulkanSampler.h
     VulkanBase/components/VulkanTexture.h
+    VulkanBase/components/VulkanTextureCube.h
     Demos/DemoManager.h
     UI/ImGuiManager.h
     Demos/DemoCategories.h
@@ -237,6 +238,7 @@ add_executable(VulkanRenderer
     Interaction/Camera.h
     Demos/DemoBase3D.h
     Demos/BasicRendering/ShadowMapping.h
+    Demos/BasicRendering/PbrIbl.h
     ${IMGUI_CORE_SOURCES}
     ${IMGUI_BACKEND_SOURCES}
 )

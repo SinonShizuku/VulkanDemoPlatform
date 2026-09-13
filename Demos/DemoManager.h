@@ -19,6 +19,7 @@
 #include "BasicRendering/glTFLoading.h"
 #include "BasicRendering/ShadowMapping.h"
 #include "BasicRendering/InstancedSceneTest.h"
+#include "BasicRendering/PbrIbl.h"
 
 class DemoManager {
 public:
@@ -66,6 +67,10 @@ public:
 
         implemented_demos["InstancedScene"] = [this]() {
             return std::make_unique<InstancedSceneTest>(window);
+        };
+
+        implemented_demos["PbrIbl"] = [this]() {
+            return std::make_unique<PbrIbl>(window);
         };
 
         implemented_demos["ShadowMapping"] = [this]() {

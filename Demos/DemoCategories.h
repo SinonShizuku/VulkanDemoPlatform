@@ -31,7 +31,8 @@ inline std::unordered_map<std::string,std::vector<DemoType>> demos = {
         {
             "Loading & Rendering glTF Model",
             "ShadowMapping",
-            "InstancedScene"
+            "InstancedScene",
+            "PbrIbl"
         }
     }
 
