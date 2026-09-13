@@ -2492,3 +2492,156 @@ VulkanRenderer [--demo <菜单名或 demo 类型名>] [--scene <资产名或绝�
 ### 15.1 采集记录
 
 （待采集）
+
+---
+
+## 16. 材质模型与 IBL：一套着色覆盖 glTF(metal/rough) 与 FBX(spec/gloss)（2026-09-13 定稿，Bistro 优先落地）
+
+目标：把 §14.5 的"几何 + base color"推进到 **PBR + 图像照明（IBL）**，并且**一条 shader 同时吃得下**
+① Bistro 的 spec/gloss 资产（FBX，diffuse + specular(RGB) + glossiness(在 alpha) + normal + emissive）
+② FlightHelmet / Sponza 的 glTF metal/rough 资产（baseColor + ORM 打包 + normal）。
+
+参考实现：`D:\Vulkan\examples\pbrtexture`（Sascha Willems）——GGX 直接光 + split-sum IBL + 运行时生成
+irradiance / prefiltered / BRDF LUT。本节的差异是把它的"单材质 push constant"扩展成"多材质 + 双工作流"。
+
+### 16.1 材质结构体（引擎侧约定）
+
+```cpp
+struct PbrMaterial {
+    // ---- 直接参数（来自材质因子 / 默认值）----
+    glm::vec4 base_color_factor{1.0f};      // glTF: baseColorFactor；FBX: COLOR_DIFFUSE
+    float     metallic  = 0.0f;             // glTF: metallicFactor；FBX spec/gloss: 0（金属掩膜见 16.4）
+    float     roughness = 1.0f;             // glTF: roughnessFactor；FBX: 1 - glossiness
+    float     f0_scalar = 0.04f;            // 电介质 F0 的标量部分（glTF 默认 0.04；UE 风格 0.08*Specular）
+    glm::vec3 f0_color{1.0f};               // 电介质 F0 的彩色部分（spec/gloss: specular.rgb；glTF: 1）
+    glm::vec3 emissive_factor{0.0f};
+    float     normal_scale = 1.0f;
+
+    // ---- 贴图下标（-1 = 无，采样端用兜底）----
+    int base_color_texture = -1;
+    int f0_texture         = -1;            // 电介质 F0 贴图（spec/gloss 的 specular；glTF 一般无）
+    int metallic_roughness_texture = -1;    // glTF: G=roughness, B=metallic
+    int roughness_texture  = -1;            // spec/gloss: gloss 在 A（采样时用 1 - a）
+    int normal_texture     = -1;
+    int occlusion_texture  = -1;            // glTF: ORM 的 R 通道；FBX 无 -> 常量 1
+    int emissive_texture   = -1;
+};
+```
+
+统一后的着色用到的四个量（**这是"两套工作流合一"的关键**）：
+
+```hlsl
+float3 baseColor = base_color_factor.rgb * sample(base_color_texture).rgb;     // sRGB 解码后
+float  metallic  = 从贴图或因子取;
+float  roughness = 从贴图或因子取;
+float3 f0_dielectric = f0_scalar * f0_color * sample(f0_texture).rgb;          // glTF: 0.04*1*1
+float3 F0       = lerp(f0_dielectric, baseColor, metallic);
+float3 diffuse  = baseColor * (1.0 - metallic);
+```
+
+### 16.2 贴图槽位、格式与色彩空间
+
+| 槽位 | Bistro(FBX) 来源 | glTF 来源 | 上传格式 | 色彩空间 |
+| --- | --- | --- | --- | --- |
+| base color | `*_BaseColor.dds`（BC1/BC3） | baseColorTexture | `R8G8B8A8_UNORM` + **shader 里 pow(2.2)**（或改用 `_SRGB` 格式，二选一，全项目统一） | sRGB |
+| f0（电介质镜面） | `*_Specular.dds` 的 **RGB**（BC3） | 无（用常量 0.04） | `R8G8B8A8_UNORM` | **线性** |
+| metallic / roughness | `*_Specular.dds` 的 **A = glossiness**（BC3）→ `roughness = 1 - a` | ORM 的 **B/G** | `R8G8B8A8_UNORM` | **线性** |
+| occlusion | 无 → 常量 1 | ORM 的 **R** | `R8G8B8A8_UNORM` | **线性** |
+| normal | `*_Normal.dds`（BC5/ATI2，2 通道） | normalTexture | `R8G8B8A8_UNORM`（BC5 解出 R/G，B 由 shader 重建 `z = sqrt(1-x²-y²)`） | **线性** |
+| emissive | `*_Emissive.dds`（BC1） | emissiveTexture × emissiveFactor | `R8G8B8A8_UNORM`（shader 里 pow(2.2) 或 `_SRGB`） | sRGB |
+
+规则（一句话）：**只有 base color / emissive 是 sRGB，其余全部线性**；BRDF LUT / irradiance / prefilter 一律线性 HDR（RG16F / RGBA16F）。
+
+### 16.3 两条加载路径的填参表
+
+| 参数 | glTF（tinygltf，FlightHelmet / Sponza） | FBX（assimp，Bistro spec/gloss） |
+| --- | --- | --- |
+| base_color_texture | `baseColorTexture` | `aiTextureType_DIFFUSE`（**注意 Bistro 报的是 DIFFUSE 不是 BASE_COLOR**） |
+| base_color_factor | `baseColorFactor` | `AI_MATKEY_COLOR_DIFFUSE` |
+| metallic | `metallicFactor` × ORM.**B** | 0（金属掩膜/手工指定才置 1） |
+| roughness | `roughnessFactor` × ORM.**G** | `1 - glossiness`，glossiness = specular 贴图 **A 通道** |
+| f0_texture / f0_color | 通常留空，`f0_scalar = 0.04` | `f0_texture = specular`，`f0_color = 1`，`f0_scalar = 1`（贴图里已是 F0） |
+| occlusion | ORM.**R** | 无 → 常量 1 |
+| normal | `normalTexture`（需 TANGENT） | `aiTextureType_NORMALS`（需 `aiProcess_CalcTangentSpace`） |
+| emissive | `emissiveTexture` × `emissiveFactor` | `aiTextureType_EMISSIVE` |
+| 材质数量 | 每模型数个（FlightHelmet 5） | **132（外景）/ 71 / 74** → 必须支持多材质 |
+
+### 16.4 着色方程
+
+直接光（每盏灯，GGX + Smith + Schlick，与 pbrtexture 一致）：
+
+```hlsl
+D = D_GGX(NdotH, roughness);  G = G_SchlickSmith(NdotL, NdotV, roughness);  F = F_Schlick(VdotH, F0);
+specular = D * G * F / (4 * NdotL * NdotV);
+kD = (1 - F) * (1 - metallic);
+color += (kD * baseColor / PI + specular) * NdotL * lightColor;
+```
+
+IBL（split-sum）：
+
+```hlsl
+// 漫反射
+vec3 irradiance = texture(samplerIrradiance, N).rgb;
+// 镜面
+vec3 R  = reflect(-V, N);
+vec3 pre = textureLod(prefilteredMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+vec2 ab = texture(samplerBRDFLUT, vec2(NdotV, roughness)).rg;
+vec3 F  = F_SchlickRoughness(NdotV, F0, roughness);
+vec3 kD = (1 - F) * (1 - metallic);
+ambient = (kD * irradiance * baseColor + pre * (F0 * ab.x + ab.y)) * ao + emissive;
+```
+
+注意 `F0 * ab.x + ab.y` 是逐通道的，所以**彩色 F0 天然支持**（这是 pbrtexture 的公式，只是他把 F0 限制成 `mix(0.04, ALBEDO, metallic)`）。
+
+### 16.5 split-sum IBL 的 pass 划分
+
+| 阶段 | pass | 输入 | 输出 | 尺寸/格式 | 频率 |
+| --- | --- | --- | --- | --- | --- |
+| Bake | **Equirect → Cube**（Bistro 需要，Sascha 的 demo 省了这步因为他直接给 cube KTX） | `san_giuseppe_bridge_4k.hdr`（2D RGBA16F） | env cube | 512² · RGBA16F · 6 面 · 带 mip | **一次性**（加载时） |
+| Bake | **Irradiance cube**（余弦卷积，半球采样） | env cube | irradiance cube | 32² · RGBA16F · 6 面 | 一次性 |
+| Bake | **Prefiltered cube**（GGX importance sampling，每 mip 一个 roughness） | env cube | prefiltered cube | 128² · RGBA16F · 6 面 · 6 级 mip | 一次性 |
+| Bake | **BRDF LUT**（Hammersley + GGX 积分，1024 采样） | — | LUT | 512² · **RG16F** · 1 mip | 一次性 |
+| 每帧 | **Skybox**（可选，画背景） | env cube | 颜色目标 | swapchain | 每帧 |
+| 每帧 | **PBR 主 pass** | 材质贴图 + irradiance/prefilter/LUT | 颜色目标（先直接写 swapchain，后续改 HDR 中间目标） | swapchain | 每帧 |
+
+实现取舍（本轮）：**Bake 走独立的 one-time command buffer，不进 FrameGraph**——它是初始化工作、与帧同步无关，而且需要"cube face / mip 级视图"这类图当前不建模的目标（`FrameGraphExecutor` 目前只建 2D 视图）。每帧的 skybox / PBR pass 仍然走 FrameGraph + dynamic rendering。后续如果要把 bake 也纳入图，需要给图补 cube face/mip 目标。
+
+参考值（`D:\Vulkan\examples\pbrtexture`）：LUT 512² RG16F/1024 采样；irradiance 64² RGBA32F；prefiltered 512² RGBA16F/10 mip/32 采样。我们首版取 **32²/128²(6 mip)/512²**，先保证正确与可跑，再按 benchmark 调。
+
+### 16.6 描述符布局与绑定频率
+
+| set | 内容 | 频率 |
+| --- | --- | --- |
+| 0 | 场景 UBO（projection/view/camera/lighting params）+ push constant（model matrix） | 每帧 / 每图元 |
+| 1 | **材质**：base color / f0 / metallic-roughness / normal / occlusion / emissive（6 张 sampler2D，缺省用共享的 1×1 兜底纹理） | 每材质（Bistro 132 个） |
+| 2 | **IBL**：irradiance cube / prefiltered cube / BRDF LUT | 整个 demo 一份 |
+
+绑定策略：沿用现在的"每个 primitive 绑一次材质 set"（Bistro 132 次 bind，可接受）；等 GPU-driven 阶段再换 bindless + 材质索引。
+
+### 16.7 验收口径（与 §14.2 一致）
+
+1. 运行：`--demo PbrIbl --scene Assets/benchmark/Bistro/Bistro_v5_2/BistroExterior.fbx --warmup 60 --frames 300 --csv out/benchmark/bistro-pbr-ibl`；
+2. **exit 0、零 VUID、无 leaked objects**；`FrameGraphTests` 不回归；
+3. 输出 `summary.csv`（CPU/GPU p50/p95/p99 + per-pass），IBL bake 的耗时单独打印（一次性，不进每帧统计）；
+4. A/B：同一机位 `IBL on/off`（以及 PBR vs 旧 base color 着色）各出一组截图 + CSV，用于说明 IBL 的收益与成本；
+5. 目视：金属高光/环境反射（灯具、金属框）、环境光方向性（迎光面 vs 背光面）、emissive 自发光（街灯串）。
+
+### 16.8 分阶段执行清单（本轮开工顺序）
+
+- [ ] **M1.1 Cubemap 基础**：`VulkanTextureCube`（6 层 + CUBE_COMPATIBLE + cube view + 单面/单 mip 视图）、cube sampler；
+- [ ] **M1.2 IBL bake**：equirect→cube → irradiance → prefilter → BRDF LUT（4 个 pass + 3 个 GLSL shader 从 `D:\Vulkan` 移植）；skybox pass；
+- [ ] **M1.3 材质扩展**：`PbrMaterial` + 6 个贴图槽 + 兜底纹理；FBX 路径补 `spec.rgb/spec.a/normal/emissive`；glTF 路径补 ORM/normal/emissive；
+- [ ] **M1.4 顶点切线**：assimp `aiProcess_CalcTangentSpace` / glTF TANGENT → `Vertex { vec4 tangent }`；
+- [ ] **M1.5 PBR+IBL 主 pass**：GGX 直接光 + split-sum IBL（shader 见 16.4），先直接输出到 swapchain；
+- [ ] **M1.6 验收**：Bistro 三场景 + FlightHelmet + Sponza 跑通，CSV + 截图 + 文档记录。
+
+### 16.9 与 pbrtexture demo 的关系（能不能"直接用他的着色方案"）
+
+能用，但要改 4 处，改完就是"他的着色数学 + 我们的材质系统"：
+
+1. **材质来源**：他是 push constant 的标量（albedo/roughness/metallic/specular），我们是材质结构 + 贴图（多材质场景必需）；
+2. **F0 从标量扩成 RGB**：他写死 `F0 = mix(0.04, ALBEDO, metallic)`，Bistro 的 `specular.rgb` 必须走彩色 F0，否则高光颜色丢失；
+3. **补 emissive / AO**：他没有 emissive 输入，AO 也没有（我们的 shader 要在 ambient 上乘 ao、最后加 emissive）；
+4. **`MAX_REFLECTION_LOD` 要按我们的 prefiltered mip 数改**（他写死 9，我们首版是 5 = 6 级 mip - 1），另外他要顶点切线（我们 Bistro 需要 assimp 现算）。
+
+IBL 生成三个 shader（`irradiancecube` / `prefilterenvmap` / `genbrdflut`）可以**几乎原样移植**（它们的数学与资产无关）；只有 equirect→cube 那一步是我们的新增（他没做，因为他的环境已经是 cube KTX）。
