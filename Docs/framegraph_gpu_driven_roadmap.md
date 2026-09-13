@@ -2628,13 +2628,34 @@ ambient = (kD * irradiance * baseColor + pre * (F0 * ab.x + ab.y)) * ao + emissi
 
 ### 16.8 分阶段执行清单（本轮开工顺序）
 
-- [ ] **M1.1 Cubemap 基础**：`VulkanTextureCube`（6 层 + CUBE_COMPATIBLE + cube view + 单面/单 mip 视图）、cube sampler；
-- [ ] **M1.2 IBL bake**：equirect→cube → irradiance → prefilter → BRDF LUT（4 个 pass + 3 个 GLSL shader 从 `D:\Vulkan` 移植）；skybox pass；
+- [x] **M1.1 Cubemap 基础**（2026-09-13 完成）：`VulkanTextureCube`（6 层 + CUBE_COMPATIBLE + cube view + 单面/单 mip 视图）、cube sampler；
+- [x] **M1.2 IBL bake**（2026-09-13 完成）：equirect→cube → irradiance → prefilter → BRDF LUT（4 个 pass + 3 个 GLSL shader 从 `D:\Vulkan` 移植）；skybox pass；
 - [ ] **M1.3 材质扩展**：`PbrMaterial` + 6 个贴图槽 + 兜底纹理；FBX 路径补 `spec.rgb/spec.a/normal/emissive`；glTF 路径补 ORM/normal/emissive；
 - [ ] **M1.4 顶点切线**：assimp `aiProcess_CalcTangentSpace` / glTF TANGENT → `Vertex { vec4 tangent }`；
 - [ ] **M1.5 PBR+IBL 主 pass**：GGX 直接光 + split-sum IBL（shader 见 16.4），先直接输出到 swapchain；
 - [ ] **M1.6 验收**：Bistro 三场景 + FlightHelmet + Sponza 跑通，CSV + 截图 + 文档记录。
 
+**M1.1 / M1.2 实现记录（2026-09-13）**
+
+- `VulkanBase/components/VulkanTextureCube.h`：cube 资源本体。整张 `VK_IMAGE_VIEW_TYPE_CUBE` 用于采样；
+  **每个面（每个 mip）各建一个 2D view** 用于上传与渲染目标——因此不需要 layered rendering，
+  FrameGraph 也不用新增"cube 目标"的概念；`upload_face()` 的 barrier 只覆盖本次 mip/face 范围，
+  逐面上传互不破坏。
+- `Interaction/HdrImage.h`：Radiance HDR → 半浮点（16F）像素的共享加载器（`stbi_loadf` + `glm::packHalf2x16`），
+  选 16F 而不是 32F 的原因见 16.2（32F 通常不可线性过滤，且 `Texture::load_file` 的调试检查只接受 4 字节浮点）。
+- `Shader/BasicRendering/pbrIbl/`：`cubeface.vert`（全屏三角形 + 面索引 → 面内方向，绕开 cube mesh）、
+  `equirect_to_cube.frag`（我们新增的一步：equirect → cube）、`irradiance_cube.frag`、`prefilter_env.frag`、
+  `brdf_lut.{vert,frag}`（后四个从 `D:\Vulkan\shaders\glsl\pbrtexture` 移植，改用我们的 push constant 与绑定）。
+- `Demos/BasicRendering/PbrIbl.h`：一次性 bake（**不进 FrameGraph**，理由见 16.5）——
+  `equirect → env cube(512²×10mip) → irradiance(32²) → prefiltered(128²×6mip) → BRDF LUT(512² RG16F)`，
+  完成后用 skybox pass 采样 env cube 做目视验证。
+- **实测（RTX 5090 D，Debug）**：资产 `Assets/benchmark/Bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr`（4096×2048），
+  **整套 bake 7.0 ms**；`--demo PbrIbl --frames 20 --warmup 3` → exit 0、零 VUID、CSV 落盘；
+  截屏 `out/verify/pbr-ibl-m12-env-skybox.png` 显示真实环境（威尼斯运河），说明 equirect→cube 与 cube 采样链路正确。
+- 两个踩坑（已修）：① 给 descriptor 写入必须在 descriptor set 分配之后（否则空指针崩溃，0xC0000005）；
+  ② 本机**未启用 synchronization2**，bake 的 barrier 必须用旧式 `vkCmdPipelineBarrier`（不能用 `vkCmdPipelineBarrier2`）。
+- 已知简化（后续按需改）：BRDF LUT 用 512 采样（参考实现 1024）；irradiance 用 32²（参考 64² RGBA32F）；
+  prefiltered 用 128²（参考 512²）；这些都不影响正确性，先保证链路通、再按 benchmark 调。
 ### 16.9 与 pbrtexture demo 的关系（能不能"直接用他的着色方案"）
 
 能用，但要改 4 处，改完就是"他的着色数学 + 我们的材质系统"：
