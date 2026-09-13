@@ -445,6 +445,11 @@ private:
             filename.filename().string(), stats.mesh_count, stats.primitive_count, stats.vertex_count,
             stats.index_count, stats.material_count, stats.texture_count, stats.dds_texture_count,
             stats.hdr_texture_count, stats.skipped_texture_count);
+        outstream << std::format(
+            "[ Model ] slots: base={} diffuse={} normal={} metallic={} roughness={} emissive={} ao={} specular={} glossiness={} lightmap={} reflection={} unknown={}\n",
+            stats.slots.base_color, stats.slots.diffuse, stats.slots.normal, stats.slots.metallic,
+            stats.slots.roughness, stats.slots.emissive, stats.slots.ambient_occlusion, stats.slots.specular,
+            stats.slots.glossiness, stats.slots.lightmap, stats.slots.reflection, stats.slots.unknown);
         for (const std::string& warning : stats.warnings)
             outstream << std::format("[ Model ] WARN {}\n", warning);
 

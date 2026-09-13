@@ -49,6 +49,21 @@ public:
         // 按来源格式细分：DDS 走 BCn 解码、HDR 走浮点路径，日志/benchmark 里能核对数量。
         uint32_t dds_texture_count = 0;
         uint32_t hdr_texture_count = 0;
+        // 材质里各类贴图槽的引用数：当前 loader 只消费 base color，其余先统计（PBR 阶段要用）。
+        struct {
+            uint32_t base_color = 0;
+            uint32_t diffuse = 0;
+            uint32_t normal = 0;
+            uint32_t metallic = 0;
+            uint32_t roughness = 0;
+            uint32_t emissive = 0;
+            uint32_t ambient_occlusion = 0;
+            uint32_t specular = 0;
+            uint32_t glossiness = 0;
+            uint32_t lightmap = 0;
+            uint32_t reflection = 0;
+            uint32_t unknown = 0;
+        } slots;
         // 世界空间包围盒（PreTransformVertices 之后顶点就是最终位置），调用方用它推导固定机位。
         glm::vec3 bounds_min = glm::vec3(0.0f);
         glm::vec3 bounds_max = glm::vec3(0.0f);
@@ -85,6 +100,7 @@ public:
 
         if (options.load_textures)
             append_white_fallback(model);       // images[0] / textures[0]
+        count_texture_slots(*scene, stats);
         load_materials(*scene, model);
         if (options.load_textures)
             load_textures(*scene, path.parent_path(), model, options, stats);
@@ -406,6 +422,39 @@ private:
 
     // -------------------------------------------------------------- 材质/几何
 
+    // 统计每个材质引用了哪些贴图槽：既用来回答"贴图是否加载完全"，也给 PBR 阶段定范围。
+    static void count_texture_slots(const aiScene& scene, Stats& stats) {
+        for (uint32_t i = 0; i < scene.mNumMaterials; ++i) {
+            const aiMaterial* material = scene.mMaterials[i];
+            if (material == nullptr)
+                continue;
+            aiString path;
+            if (material->GetTexture(aiTextureType_BASE_COLOR, 0, &path) == AI_SUCCESS)
+                ++stats.slots.base_color;
+            if (material->GetTexture(aiTextureType_DIFFUSE, 0, &path) == AI_SUCCESS)
+                ++stats.slots.diffuse;
+            if (material->GetTexture(aiTextureType_NORMALS, 0, &path) == AI_SUCCESS)
+                ++stats.slots.normal;
+            if (material->GetTexture(aiTextureType_METALNESS, 0, &path) == AI_SUCCESS)
+                ++stats.slots.metallic;
+            if (material->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &path) == AI_SUCCESS)
+                ++stats.slots.roughness;
+            if (material->GetTexture(aiTextureType_EMISSIVE, 0, &path) == AI_SUCCESS)
+                ++stats.slots.emissive;
+            if (material->GetTexture(aiTextureType_AMBIENT_OCCLUSION, 0, &path) == AI_SUCCESS)
+                ++stats.slots.ambient_occlusion;
+            if (material->GetTexture(aiTextureType_SPECULAR, 0, &path) == AI_SUCCESS)
+                ++stats.slots.specular;
+            if (material->GetTexture(aiTextureType_SHININESS, 0, &path) == AI_SUCCESS)
+                ++stats.slots.glossiness;
+            if (material->GetTexture(aiTextureType_LIGHTMAP, 0, &path) == AI_SUCCESS)
+                ++stats.slots.lightmap;
+            if (material->GetTexture(aiTextureType_REFLECTION, 0, &path) == AI_SUCCESS)
+                ++stats.slots.reflection;
+            if (material->GetTexture(aiTextureType_UNKNOWN, 0, &path) == AI_SUCCESS)
+                ++stats.slots.unknown;
+        }
+    }
     static void load_materials(const aiScene& scene, VulkanglTFModel& model) {
         model.materials.resize(scene.mNumMaterials);
         for (uint32_t i = 0; i < scene.mNumMaterials; ++i) {
